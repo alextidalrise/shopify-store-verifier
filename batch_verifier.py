@@ -297,29 +297,42 @@ class BatchVerifier:
 
 
 async def main():
-    """Example usage of batch verifier."""
-    # Create a sample input file for testing
-    sample_stores = [
-        "https://weareplufl.com",
-        "https://www.allbirds.com",
-        "https://www.bombas.com",
-    ]
+    """Batch verification runner."""
     
-    # Save sample stores to a text file
-    with open("sample_stores.txt", "w") as f:
-        f.write("\n".join(sample_stores))
+    # ============================================
+    # CONFIGURATION - EDIT THESE SETTINGS
+    # ============================================
     
-    print("Sample stores file created: sample_stores.txt")
-    print("\nTo run batch verification:")
-    print("  python batch_verifier.py")
-    print("\nFor CSV input:")
-    print("  Create a CSV file with a column containing store URLs")
-    print("  Then modify the main() function to use:")
-    print("    await batch.run('your_stores.csv', input_format='csv', url_column='url')")
+    # Your store list file (TXT or CSV)
+    input_file = "my_stores.txt"
+    
+    # File format: "txt" or "csv"
+    file_format = "txt"
+    
+    # If CSV, which column has URLs? (only needed if format="csv")
+    csv_url_column = "url"
+    
+    # How many stores to process at once (3-5 recommended)
+    concurrent = 5  # Faster for the optimized flow!
+    
+    # Where to save results
+    output_folder = "results"
+    
+    # ============================================
+    
+    print(f"Starting batch verification...")
+    print(f"Input file: {input_file}")
+    print(f"Concurrent: {concurrent}")
+    print(f"Output: {output_folder}/")
+    print("="*70 + "\n")
     
     # Run batch verification
-    batch = BatchVerifier(output_dir="results", max_concurrent=3)
-    await batch.run("sample_stores.txt", input_format="txt")
+    batch = BatchVerifier(output_dir=output_folder, max_concurrent=concurrent)
+    
+    if file_format == "csv":
+        await batch.run(input_file, input_format="csv", url_column=csv_url_column)
+    else:
+        await batch.run(input_file, input_format="txt")
 
 
 if __name__ == "__main__":
