@@ -7,6 +7,10 @@ results/
 # Checkpoints
 checkpoint_*.json
 
+# Debug files
+debug_*.png
+*.png
+
 # Python
 __pycache__/
 *.py[cod]

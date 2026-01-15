@@ -157,16 +157,18 @@ class ShopifyVerifier:
         'input[type="submit"][name="checkout"]',
     ]
     
-    def __init__(self, headless: bool = True, timeout: int = 30000):
+    def __init__(self, headless: bool = True, timeout: int = 30000, debug: bool = False):
         """
         Initialize the verifier.
         
         Args:
             headless: Run browser in headless mode
             timeout: Default timeout in milliseconds
+            debug: Enable debug mode with extra logging and screenshots
         """
         self.headless = headless
         self.timeout = timeout
+        self.debug = debug
         
     def _normalize_url(self, url: str) -> str:
         """Normalize store URL."""
@@ -243,7 +245,7 @@ class ShopifyVerifier:
         
         return closed_count
     
-    async def _handle_geolocation_popup(self, page: Page) -> Optional[str]:
+    async def _handle_geolocation_popup(self, page: Page, debug: bool = True) -> Optional[str]:
         """
         Handle geolocation/country selector pop-ups.
         
@@ -265,47 +267,86 @@ class ShopifyVerifier:
                 '[class*="country-selector"]',
                 '[class*="locale-selector"]',
                 '[class*="region-selector"]',
+                '[class*="country"]',
+                '[class*="CountrySelector"]',
+                '[class*="location"]',
+                '[id*="country"]',
+                '[id*="location"]',
+                '[id*="locale"]',
                 'text=/shop.*currency/i',
                 'text=/country.*store/i',
+                'text=/select.*country/i',
+                'text=/shipping.*to/i',
             ]
             
-            for pattern in geolocation_patterns:
+            if debug:
+                print(f"  Looking for geolocation pop-ups...")
+            
+            found_geo_element = False
+            
+            for i, pattern in enumerate(geolocation_patterns):
                 try:
                     element = page.locator(pattern).first
-                    if await element.count() > 0 and await element.is_visible(timeout=2000):
-                        print(f"  Detected geolocation pop-up")
-                        
-                        # Look for "stay here" / "continue" buttons
-                        continue_patterns = [
-                            'button:has-text("Continue")',
-                            'button:has-text("Stay")',
-                            'button:has-text("No")',
-                            'button:has-text("Keep shopping")',
-                            'a:has-text("Continue")',
-                            'a:has-text("Stay")',
-                        ]
-                        
-                        for continue_pattern in continue_patterns:
+                    count = await element.count()
+                    if count > 0:
+                        is_visible = await element.is_visible(timeout=1000)
+                        if is_visible:
+                            if debug:
+                                print(f"  ✓ Found geolocation element with pattern: {pattern}")
+                            found_geo_element = True
+                            
+                            # Try to get text content for debugging
                             try:
-                                continue_btn = page.locator(continue_pattern).first
-                                if await continue_btn.count() > 0 and await continue_btn.is_visible(timeout=1000):
-                                    print(f"  Clicking 'continue/stay' button")
-                                    await continue_btn.click(timeout=3000)
-                                    await page.wait_for_timeout(1000)
-                                    return "stayed_on_current_store"
+                                text_content = await element.text_content()
+                                if text_content and debug:
+                                    preview = text_content[:100].replace('\n', ' ')
+                                    print(f"    Content preview: {preview}...")
                             except:
-                                continue
+                                pass
+                            
+                            # Look for "stay here" / "continue" buttons
+                            continue_patterns = [
+                                'button:has-text("Continue")',
+                                'button:has-text("Stay")',
+                                'button:has-text("No")',
+                                'button:has-text("Keep shopping")',
+                                'button:has-text("Continue shopping")',
+                                'button:has-text("No thanks")',
+                                'a:has-text("Continue")',
+                                'a:has-text("Stay")',
+                                'a:has-text("No thanks")',
+                                # Close button patterns
+                                'button[aria-label*="close" i]',
+                                '[class*="close"]',
+                            ]
+                            
+                            for continue_pattern in continue_patterns:
+                                try:
+                                    continue_btn = page.locator(continue_pattern).first
+                                    if await continue_btn.count() > 0 and await continue_btn.is_visible(timeout=1000):
+                                        print(f"  Clicking button: {continue_pattern}")
+                                        await continue_btn.click(timeout=3000)
+                                        await page.wait_for_timeout(1000)
+                                        return "stayed_on_current_store"
+                                except:
+                                    continue
+                            
+                            # If no continue button found, try to close it
+                            print(f"  No 'continue' button found, trying generic close...")
+                            await self._close_popups(page, max_attempts=1)
+                            return "closed_geolocation_popup"
                         
-                        # If no continue button found, try to close it
-                        print(f"  No 'continue' button found, trying to close...")
-                        await self._close_popups(page, max_attempts=1)
-                        return "closed_geolocation_popup"
-                        
-                except:
+                except Exception as e:
+                    if debug and i < 5:  # Only show first few errors
+                        print(f"    Pattern {i} check failed: {str(e)[:50]}")
                     continue
+            
+            if not found_geo_element and debug:
+                print(f"  No geolocation pop-ups detected")
                     
         except Exception as e:
-            pass
+            if debug:
+                print(f"  Geolocation check error: {str(e)[:80]}")
         
         return None
     
@@ -623,7 +664,7 @@ class ShopifyVerifier:
             
             try:
                 context = await browser.new_context(
-                    viewport={'width': 1920, 'height': 1080},
+                    viewport={'width': 1280, 'height': 800},
                     user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
                 )
                 page = await context.new_page()
@@ -638,9 +679,17 @@ class ShopifyVerifier:
                 await self._close_popups(page)
                 
                 # Handle geolocation/country selector pop-ups
-                geo_action = await self._handle_geolocation_popup(page)
+                geo_action = await self._handle_geolocation_popup(page, debug=self.debug)
                 if geo_action:
                     print(f"  Geolocation action: {geo_action}")
+                
+                # Take a screenshot if in debug mode
+                if self.debug:
+                    try:
+                        await page.screenshot(path=f"debug_homepage_{base_url.replace('https://', '').replace('/', '_')}.png")
+                        print(f"  Debug: Screenshot saved")
+                    except:
+                        pass
                 
                 # Detect homepage currency
                 result.homepage_currency = await self._detect_currency_from_page(page)
