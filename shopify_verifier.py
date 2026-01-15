@@ -649,12 +649,22 @@ class ShopifyVerifier:
             print(f"  Container approach didn't find variants, trying direct search...")
             
             direct_patterns = [
+                # Radio inputs
                 'input[type="radio"][name*="option"]',
                 'input[type="radio"][name*="Size"]',
                 'input[type="radio"][name*="Color"]',
+                # Variant buttons with data attributes
                 'button[data-variant]',
+                'button[data-option-value]',
+                # Labels (often wrap hidden radios)
                 'label[for*="variant-"]',
                 'label[for*="option-"]',
+                # Generic buttons in product forms (very permissive)
+                'form button[type="button"]:not([aria-label*="close" i])',
+                'div[class*="size"] button',
+                'div[class*="Size"] button',
+                # Allbirds-style: buttons that are siblings to each other
+                'button ~ button',  # Any button that has a button sibling (likely part of a button group)
             ]
             
             for direct_pattern in direct_patterns:
@@ -707,6 +717,78 @@ class ShopifyVerifier:
                         
                 except:
                     continue
+        
+        # Strategy 4: Ultra-aggressive - find ANY button that might be a size/variant
+        # Look for buttons with size-like text (numbers, S/M/L, etc.)
+        if not variant_selected:
+            print(f"  Direct search didn't work, trying ultra-aggressive search...")
+            
+            try:
+                # Get ALL buttons on the page
+                all_buttons = page.locator('button')
+                button_count = await all_buttons.count()
+                
+                print(f"    Found {button_count} total buttons on page")
+                
+                # Look through buttons for ones that look like sizes/variants
+                for idx in range(min(button_count, 100)):  # Check up to 100 buttons
+                    try:
+                        btn = all_buttons.nth(idx)
+                        
+                        if not await btn.is_visible(timeout=200):
+                            continue
+                        
+                        # Get button text
+                        btn_text = await btn.text_content()
+                        if not btn_text:
+                            continue
+                        
+                        btn_text = btn_text.strip()
+                        
+                        # Skip empty or very long text (likely not a variant)
+                        if not btn_text or len(btn_text) > 10:
+                            continue
+                        
+                        # Check if button text looks like a size or variant
+                        # Sizes: "8", "8.5", "S", "M", "L", "XL", "Red", etc.
+                        looks_like_variant = (
+                            btn_text.replace('.', '').replace('½', '').isdigit() or  # "8", "8.5", "10½"
+                            btn_text in ['S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'XS'] or  # Clothing sizes
+                            (len(btn_text) <= 5 and btn_text.isalpha())  # Short text like "Red", "Blue"
+                        )
+                        
+                        if not looks_like_variant:
+                            continue
+                        
+                        # Check if disabled
+                        disabled = await btn.get_attribute('disabled')
+                        classes = await btn.get_attribute('class') or ''
+                        
+                        if disabled is not None:
+                            continue
+                        
+                        # If sold out in classes, skip
+                        if 'sold-out' in classes.lower() or 'disabled' in classes.lower():
+                            continue
+                        
+                        print(f"    Found potential variant button: '{btn_text}'")
+                        
+                        # Try to click it
+                        try:
+                            await btn.click(timeout=2000, force=False)
+                            await page.wait_for_timeout(800)
+                            variant_selected = True
+                            print(f"    ✓ Clicked variant button: '{btn_text}'")
+                            break
+                        except Exception as e:
+                            print(f"    Failed to click '{btn_text}': {str(e)[:30]}")
+                            continue
+                            
+                    except:
+                        continue
+                        
+            except Exception as e:
+                print(f"    Ultra-aggressive search failed: {str(e)[:50]}")
         
         # If no variants found, that might be okay (some products don't have variants)
         if not variant_selected:
