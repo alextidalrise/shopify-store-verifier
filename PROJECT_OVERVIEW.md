@@ -63,20 +63,22 @@ The previous boilerplate used `requests` library, which has fundamental limitati
 The main verification engine. Key features:
 
 - **Currency Detection**: 
-  - Searches for currency selector UI elements
-  - Extracts currency from Shopify JavaScript objects
-  - Detects currency in checkout page
-  - Supports 10+ detection patterns
+  - Tests actual currency switching in checkout
+  - Uses country selector to change currency
+  - Verifies prices update to different currency
+  - Intelligent country-to-currency mapping
 
 - **Product Discovery**:
-  - Tries `/collections/all` endpoint
-  - Falls back to homepage parsing
-  - Uses Shopify products API as last resort
+  - Loads `/products.json` directly in browser context
+  - Gets product data + establishes session simultaneously
+  - Finds first available variant instantly
+  - No page navigation or rendering needed
 
 - **Cart Interaction**:
-  - Handles variant selection automatically
-  - Tries multiple "Add to Cart" button patterns
-  - Works with different Shopify themes
+  - Uses Shopify Cart API (`/cart/add.js`) via `fetch()`
+  - Executes in browser context (has cookies/session)
+  - Bypasses all UI interaction
+  - Falls back to button clicking only if API fails
 
 - **Checkout Navigation**:
   - Multiple checkout button patterns
@@ -172,40 +174,42 @@ python analyze_results.py results/results_20260115_143022.json
 ### Step-by-Step Process
 
 ```
-1. Navigate to homepage
+1. Load /products.json in browser
+   ├─ Establishes session + cookies
+   ├─ Gets product data instantly
+   └─ Finds first available variant
    ↓
-2. Check for currency selector UI
-   ├─ Multiple selector patterns
-   └─ Extract available currencies
+2. Add to cart via API
+   ├─ Execute fetch() in browser context
+   ├─ POST to /cart/add.js with variant ID
+   └─ Falls back to button clicking if API fails
    ↓
-3. Detect homepage currency
-   ├─ Check Shopify JS objects
-   ├─ Check meta tags
-   └─ Parse price text
+3. Set up network monitoring
+   ├─ Attach request listener
+   └─ Monitor for post-purchase app loads
    ↓
-4. Find a product
-   ├─ Try /collections/all
-   ├─ Try homepage
-   └─ Try products.json API
+4. Navigate to /checkout
+   ├─ Direct URL navigation
+   └─ Wait for page load
    ↓
-5. Add product to cart
-   ├─ Select variants if needed
-   ├─ Try multiple button patterns
-   └─ Wait for cart update
+5. Test currency switching
+   ├─ Get available countries from selector
+   ├─ Detect initial currency from <abbr> elements
+   ├─ Select country with different expected currency
+   ├─ Wait for prices to update
+   └─ Verify currency actually changed
    ↓
-6. Navigate to checkout
-   ├─ Try checkout buttons
-   └─ Direct URL navigation
+6. Analyze post-purchase requests
+   ├─ Filter out survey/feedback apps
+   ├─ Find post-purchase CDN loads
+   ├─ Extract app name from URLs
+   └─ Exclude non-upsell apps
    ↓
-7. Detect checkout currency
-   └─ Same methods as step 3
-   ↓
-8. Scan for post-purchase indicators
-   ├─ Check for app identifiers
-   ├─ Check for app CDN domains
-   └─ Check for Shopify Scripts API
-   ↓
-9. Return comprehensive results
+7. Return comprehensive results
+   ├─ Multi-currency: tested via actual switching
+   ├─ Post-purchase: detected via network events
+   ├─ Country-currency pairs recorded
+   └─ App name extracted
 ```
 
 ### What We Detect
