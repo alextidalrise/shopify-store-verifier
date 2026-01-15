@@ -684,6 +684,19 @@ class ShopifyVerifier:
                                     except:
                                         pass
                                     
+                                    # Skip buttons that are clearly not variant selectors
+                                    # These are informational buttons, not selection buttons
+                                    if option_selector == 'button:not([disabled])':
+                                        non_variant_keywords = [
+                                            'size chart', 'size guide', 'fit guide', 'sizing',
+                                            'chart', 'guide', 'info', 'learn more', 'help',
+                                            'measure', 'find your size'
+                                        ]
+                                        text_lower = option_text.lower()
+                                        if any(keyword in text_lower for keyword in non_variant_keywords):
+                                            print(f"      Skipping non-variant button: {option_text}")
+                                            continue
+                                    
                                     print(f"      Selecting: {option_text}")
                                     
                                     # Click the option
