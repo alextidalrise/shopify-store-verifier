@@ -24,24 +24,31 @@ class VerificationResult:
     success: bool
     error_message: Optional[str] = None
     
-    # Currency verification
+    # Currency verification (updated approach)
     multiple_currencies_supported: bool = False
-    currency_selector_found: bool = False
-    detected_currencies: list[str] = None
-    checkout_currency: Optional[str] = None
-    homepage_currency: Optional[str] = None
+    available_countries: list[str] = None
+    country_currency_pairs: dict = None  # e.g., {"US": "USD", "GB": "GBP"}
+    currency_switch_tested: bool = False
+    currency_switch_successful: bool = False
+    initial_currency: Optional[str] = None
+    switched_currency: Optional[str] = None
     
-    # Post-purchase verification
+    # Post-purchase verification (updated approach)
     post_purchase_upsell_detected: bool = False
-    post_purchase_details: Optional[str] = None
+    post_purchase_app_name: Optional[str] = None
+    post_purchase_requests: list[str] = None
     
     # Debug info
     product_url: Optional[str] = None
     reached_checkout: bool = False
     
     def __post_init__(self):
-        if self.detected_currencies is None:
-            self.detected_currencies = []
+        if self.available_countries is None:
+            self.available_countries = []
+        if self.country_currency_pairs is None:
+            self.country_currency_pairs = {}
+        if self.post_purchase_requests is None:
+            self.post_purchase_requests = []
     
     def to_dict(self) -> dict:
         """Convert to dictionary for easy serialization."""
@@ -50,12 +57,15 @@ class VerificationResult:
             "success": self.success,
             "error_message": self.error_message,
             "multiple_currencies_supported": self.multiple_currencies_supported,
-            "currency_selector_found": self.currency_selector_found,
-            "detected_currencies": self.detected_currencies,
-            "checkout_currency": self.checkout_currency,
-            "homepage_currency": self.homepage_currency,
+            "available_countries": self.available_countries,
+            "country_currency_pairs": self.country_currency_pairs,
+            "currency_switch_tested": self.currency_switch_tested,
+            "currency_switch_successful": self.currency_switch_successful,
+            "initial_currency": self.initial_currency,
+            "switched_currency": self.switched_currency,
             "post_purchase_upsell_detected": self.post_purchase_upsell_detected,
-            "post_purchase_details": self.post_purchase_details,
+            "post_purchase_app_name": self.post_purchase_app_name,
+            "post_purchase_requests": self.post_purchase_requests,
             "product_url": self.product_url,
             "reached_checkout": self.reached_checkout,
         }
@@ -156,6 +166,64 @@ class ShopifyVerifier:
         '[class*="checkout-button"]',
         'input[type="submit"][name="checkout"]',
     ]
+    
+    # Country to currency mapping for intelligent testing
+    # This helps us identify which countries use different currencies
+    COUNTRY_CURRENCY_MAP = {
+        # North America
+        'US': 'USD', 'USA': 'USD', 'United States': 'USD',
+        'CA': 'CAD', 'Canada': 'CAD',
+        'MX': 'MXN', 'Mexico': 'MXN',
+        
+        # Europe - Euro countries
+        'AT': 'EUR', 'Austria': 'EUR',
+        'BE': 'EUR', 'Belgium': 'EUR',
+        'DE': 'EUR', 'Germany': 'EUR',
+        'ES': 'EUR', 'Spain': 'EUR',
+        'FR': 'EUR', 'France': 'EUR',
+        'IE': 'EUR', 'Ireland': 'EUR',
+        'IT': 'EUR', 'Italy': 'EUR',
+        'NL': 'EUR', 'Netherlands': 'EUR',
+        'PT': 'EUR', 'Portugal': 'EUR',
+        'FI': 'EUR', 'Finland': 'EUR',
+        'GR': 'EUR', 'Greece': 'EUR',
+        
+        # Europe - Non-Euro
+        'GB': 'GBP', 'UK': 'GBP', 'United Kingdom': 'GBP',
+        'CH': 'CHF', 'Switzerland': 'CHF',
+        'NO': 'NOK', 'Norway': 'NOK',
+        'SE': 'SEK', 'Sweden': 'SEK',
+        'DK': 'DKK', 'Denmark': 'DKK',
+        'PL': 'PLN', 'Poland': 'PLN',
+        'CZ': 'CZK', 'Czech Republic': 'CZK',
+        
+        # Asia Pacific
+        'AU': 'AUD', 'Australia': 'AUD',
+        'NZ': 'NZD', 'New Zealand': 'NZD',
+        'JP': 'JPY', 'Japan': 'JPY',
+        'CN': 'CNY', 'China': 'CNY',
+        'HK': 'HKD', 'Hong Kong': 'HKD',
+        'SG': 'SGD', 'Singapore': 'SGD',
+        'KR': 'KRW', 'South Korea': 'KRW',
+        'IN': 'INR', 'India': 'INR',
+        'TH': 'THB', 'Thailand': 'THB',
+        'MY': 'MYR', 'Malaysia': 'MYR',
+        'ID': 'IDR', 'Indonesia': 'IDR',
+        'PH': 'PHP', 'Philippines': 'PHP',
+        'VN': 'VND', 'Vietnam': 'VND',
+        
+        # Middle East & Africa
+        'AE': 'AED', 'United Arab Emirates': 'AED',
+        'SA': 'SAR', 'Saudi Arabia': 'SAR',
+        'IL': 'ILS', 'Israel': 'ILS',
+        'ZA': 'ZAR', 'South Africa': 'ZAR',
+        
+        # South America
+        'BR': 'BRL', 'Brazil': 'BRL',
+        'AR': 'ARS', 'Argentina': 'ARS',
+        'CL': 'CLP', 'Chile': 'CLP',
+        'CO': 'COP', 'Colombia': 'COP',
+    }
     
     def __init__(self, headless: bool = True, timeout: int = 30000, debug: bool = False):
         """
@@ -649,6 +717,15 @@ class ShopifyVerifier:
             print(f"  Container approach didn't find variants, trying direct search...")
             
             direct_patterns = [
+                # Allbirds-style: buttons inside list items (from browser inspection)
+                'list button',
+                'ul button',
+                '[role="list"] button',
+                # Buttons with aria-label containing "size" or "select"
+                'button[aria-label*="size" i]',
+                'button[aria-label*="Select" i]',
+                # Allbirds-style: buttons with "Select size" text
+                'button:has-text("Select size")',
                 # Radio inputs
                 'input[type="radio"][name*="option"]',
                 'input[type="radio"][name*="Size"]',
@@ -659,12 +736,6 @@ class ShopifyVerifier:
                 # Labels (often wrap hidden radios)
                 'label[for*="variant-"]',
                 'label[for*="option-"]',
-                # Generic buttons in product forms (very permissive)
-                'form button[type="button"]:not([aria-label*="close" i])',
-                'div[class*="size"] button',
-                'div[class*="Size"] button',
-                # Allbirds-style: buttons that are siblings to each other
-                'button ~ button',  # Any button that has a button sibling (likely part of a button group)
             ]
             
             for direct_pattern in direct_patterns:
@@ -718,77 +789,6 @@ class ShopifyVerifier:
                 except:
                     continue
         
-        # Strategy 4: Ultra-aggressive - find ANY button that might be a size/variant
-        # Look for buttons with size-like text (numbers, S/M/L, etc.)
-        if not variant_selected:
-            print(f"  Direct search didn't work, trying ultra-aggressive search...")
-            
-            try:
-                # Get ALL buttons on the page
-                all_buttons = page.locator('button')
-                button_count = await all_buttons.count()
-                
-                print(f"    Found {button_count} total buttons on page")
-                
-                # Look through buttons for ones that look like sizes/variants
-                for idx in range(min(button_count, 100)):  # Check up to 100 buttons
-                    try:
-                        btn = all_buttons.nth(idx)
-                        
-                        if not await btn.is_visible(timeout=200):
-                            continue
-                        
-                        # Get button text
-                        btn_text = await btn.text_content()
-                        if not btn_text:
-                            continue
-                        
-                        btn_text = btn_text.strip()
-                        
-                        # Skip empty or very long text (likely not a variant)
-                        if not btn_text or len(btn_text) > 10:
-                            continue
-                        
-                        # Check if button text looks like a size or variant
-                        # Sizes: "8", "8.5", "S", "M", "L", "XL", "Red", etc.
-                        looks_like_variant = (
-                            btn_text.replace('.', '').replace('½', '').isdigit() or  # "8", "8.5", "10½"
-                            btn_text in ['S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'XS'] or  # Clothing sizes
-                            (len(btn_text) <= 5 and btn_text.isalpha())  # Short text like "Red", "Blue"
-                        )
-                        
-                        if not looks_like_variant:
-                            continue
-                        
-                        # Check if disabled
-                        disabled = await btn.get_attribute('disabled')
-                        classes = await btn.get_attribute('class') or ''
-                        
-                        if disabled is not None:
-                            continue
-                        
-                        # If sold out in classes, skip
-                        if 'sold-out' in classes.lower() or 'disabled' in classes.lower():
-                            continue
-                        
-                        print(f"    Found potential variant button: '{btn_text}'")
-                        
-                        # Try to click it
-                        try:
-                            await btn.click(timeout=2000, force=False)
-                            await page.wait_for_timeout(800)
-                            variant_selected = True
-                            print(f"    ✓ Clicked variant button: '{btn_text}'")
-                            break
-                        except Exception as e:
-                            print(f"    Failed to click '{btn_text}': {str(e)[:30]}")
-                            continue
-                            
-                    except:
-                        continue
-                        
-            except Exception as e:
-                print(f"    Ultra-aggressive search failed: {str(e)[:50]}")
         
         # If no variants found, that might be okay (some products don't have variants)
         if not variant_selected:
@@ -971,62 +971,272 @@ class ShopifyVerifier:
         
         return False
     
-    async def _detect_post_purchase_upsell(self, page: Page) -> tuple[bool, Optional[str]]:
+    async def _get_checkout_currency(self, page: Page) -> Optional[str]:
         """
-        Detect if there's a post-purchase upsell flow.
-        This is tricky because we need to complete the checkout, which we can't do fully.
-        We'll look for indicators instead.
+        Extract currency from checkout page by finding <abbr> elements with 3-letter codes.
         
         Returns:
-            Tuple of (detected, details)
+            Currency code (e.g., 'USD', 'GBP') or None
         """
         try:
-            # Check page content for post-purchase app indicators
-            content = await page.content()
+            # Look for <abbr> elements which typically contain currency codes
+            abbr_elements = await page.locator('abbr').all()
             
-            # Common post-purchase app identifiers
-            post_purchase_indicators = [
-                'post-purchase',
-                'post_purchase',
-                'postpurchase',
-                'reconvert',
-                'zipify',
-                'upsell',
-                'one-click-upsell',
-                'aftersell',
-                'carthook',
-            ]
+            for abbr in abbr_elements:
+                text = await abbr.text_content()
+                if text and len(text.strip()) == 3 and text.strip().isupper():
+                    currency = text.strip()
+                    # Validate it looks like a currency code
+                    if re.match(r'^[A-Z]{3}$', currency):
+                        return currency
             
-            content_lower = content.lower()
-            detected_indicators = []
+            return None
+        except Exception as e:
+            if self.debug:
+                print(f"  Error detecting checkout currency: {str(e)[:50]}")
+            return None
+    
+    async def _get_available_countries(self, page: Page) -> tuple[list[str], Optional[str]]:
+        """
+        Get list of available countries from the country selector in checkout.
+        
+        Returns:
+            Tuple of (list of country codes/names, currently selected country)
+        """
+        try:
+            # Look for the country selector
+            country_select = page.locator('select[name="countryCode"]').first
             
-            for indicator in post_purchase_indicators:
-                if indicator in content_lower:
-                    detected_indicators.append(indicator)
+            if await country_select.count() == 0:
+                if self.debug:
+                    print("  No country selector found")
+                return [], None
             
-            # Check for Shopify scripts API (used by post-purchase apps)
-            has_scripts_api = 'shopify.analytics.publish' in content or 'post_purchase' in content
+            # Get currently selected option
+            selected_value = await country_select.evaluate('el => el.value')
             
-            # Check for specific app domains/CDNs
-            app_domains = [
-                'reconvert.io',
-                'zipify.com',
-                'carthook.com',
-                'aftersell.com',
-            ]
+            # Get all available options
+            options = await country_select.locator('option').all()
+            countries = []
             
-            for domain in app_domains:
-                if domain in content:
-                    detected_indicators.append(f"app:{domain}")
+            for option in options:
+                value = await option.get_attribute('value')
+                text = await option.text_content()
+                if value:
+                    countries.append(value)
+                    if self.debug:
+                        print(f"    Found country: {text} ({value})")
             
-            if detected_indicators or has_scripts_api:
-                details = f"Indicators found: {', '.join(detected_indicators[:3])}"
-                return True, details
-            
-            return False, None
+            return countries, selected_value
             
         except Exception as e:
-            return False, f"Error: {str(e)}"
+            if self.debug:
+                print(f"  Error getting countries: {str(e)[:80]}")
+            return [], None
+    
+    def _get_expected_currency(self, country_code: str) -> Optional[str]:
+        """
+        Get expected currency for a country code.
+        
+        Args:
+            country_code: 2-letter country code (e.g., 'US', 'GB')
+            
+        Returns:
+            Expected currency code or None
+        """
+        # Try exact match first
+        if country_code in self.COUNTRY_CURRENCY_MAP:
+            return self.COUNTRY_CURRENCY_MAP[country_code]
+        
+        # Try case-insensitive match
+        for key, value in self.COUNTRY_CURRENCY_MAP.items():
+            if key.upper() == country_code.upper():
+                return value
+        
+        return None
+    
+    async def _test_currency_switch(self, page: Page) -> dict:
+        """
+        Test if switching countries in checkout changes the currency.
+        
+        Returns:
+            Dict with test results including currencies detected and whether switch worked
+        """
+        result = {
+            'tested': False,
+            'initial_country': None,
+            'initial_currency': None,
+            'switched_country': None,
+            'switched_currency': None,
+            'currency_changed': False,
+            'available_countries': [],
+            'country_currency_pairs': {},
+        }
+        
+        try:
+            print("  Testing currency switching in checkout...")
+            
+            # Get available countries
+            countries, initial_country = await self._get_available_countries(page)
+            result['available_countries'] = countries
+            result['initial_country'] = initial_country
+            
+            if not countries:
+                print("  No country selector found - single market store")
+                return result
+            
+            if len(countries) == 1:
+                print(f"  Only 1 country available ({countries[0]}) - single market store")
+                return result
+            
+            print(f"  Found {len(countries)} countries in selector")
+            
+            # Get initial currency
+            initial_currency = await self._get_checkout_currency(page)
+            result['initial_currency'] = initial_currency
+            
+            if not initial_currency:
+                print("  Could not detect initial currency")
+                return result
+            
+            print(f"  Initial: {initial_country} → {initial_currency}")
+            result['country_currency_pairs'][initial_country] = initial_currency
+            
+            # Find a country with a different expected currency
+            target_country = None
+            expected_new_currency = None
+            initial_expected_currency = self._get_expected_currency(initial_country)
+            
+            for country in countries:
+                if country != initial_country:
+                    expected_currency = self._get_expected_currency(country)
+                    if expected_currency and expected_currency != initial_expected_currency:
+                        target_country = country
+                        expected_new_currency = expected_currency
+                        print(f"  Will test switching to: {country} (expect {expected_currency})")
+                        break
+            
+            if not target_country:
+                print("  All countries use same currency - no switch test needed")
+                return result
+            
+            # Perform the switch
+            country_select = page.locator('select[name="countryCode"]').first
+            await country_select.select_option(target_country)
+            result['switched_country'] = target_country
+            result['tested'] = True
+            
+            # Wait for currency to update (2-3 seconds as per user)
+            print("  Waiting for currency to update...")
+            await page.wait_for_timeout(3000)
+            
+            # Check new currency
+            new_currency = await self._get_checkout_currency(page)
+            result['switched_currency'] = new_currency
+            result['country_currency_pairs'][target_country] = new_currency
+            
+            if new_currency:
+                print(f"  After switch: {target_country} → {new_currency}")
+                
+                if new_currency != initial_currency:
+                    result['currency_changed'] = True
+                    print(f"  ✅ Currency switched from {initial_currency} to {new_currency}")
+                else:
+                    print(f"  ❌ Currency stayed as {initial_currency} (expected {expected_new_currency})")
+            else:
+                print("  Could not detect currency after switch")
+            
+            return result
+            
+        except Exception as e:
+            print(f"  Error testing currency switch: {str(e)[:100]}")
+            return result
+    
+    async def _monitor_post_purchase_network(self, page: Page) -> tuple[bool, Optional[str], list[str]]:
+        """
+        Monitor network requests for post-purchase indicators.
+        Looks for:
+        1. CDN script loads with 'post-purchase' in URL
+        2. App-specific trigger endpoints (ppShouldTrigger, etc.)
+        
+        Returns:
+            Tuple of (detected, app_name, list_of_detected_requests)
+        """
+        detected_requests = []
+        detected_app = None
+        
+        def handle_request(request):
+            url = request.url
+            
+            # Check for post-purchase patterns
+            if 'post-purchase' in url.lower() or 'post_purchase' in url.lower():
+                detected_requests.append(url)
+                
+                # Try to extract app name from URL
+                # Pattern: /post-purchase/version/aftersell-549/
+                # Pattern: /post-purchase/handle/post-purchase/version/aftersell-549/
+                match = re.search(r'/([a-z]+(?:-[a-z]+)?)-\d+/', url)
+                if match:
+                    app_name = match.group(1)
+                    # Normalize app names
+                    app_name_map = {
+                        'aftersell': 'AfterSell',
+                        'reconvert': 'ReConvert',
+                        'zipify': 'Zipify',
+                        'carthook': 'CartHook',
+                        'honeycomb': 'Honeycomb',
+                    }
+                    return app_name_map.get(app_name, app_name.title())
+            
+            # Check for app-specific trigger endpoints
+            trigger_patterns = [
+                ('ppShouldTrigger', 'aftersell'),
+                ('shouldTrigger', 'reconvert'),
+                ('trigger-check', 'generic'),
+            ]
+            
+            for pattern, app in trigger_patterns:
+                if pattern in url:
+                    detected_requests.append(url)
+                    if app != 'generic':
+                        return app.title()
+        
+        # Set up network monitoring
+        page.on('request', lambda req: handle_request(req) or None)
+        page.on('response', lambda res: handle_request(res.request) or None)
+        
+        # Wait for network activity
+        await page.wait_for_timeout(5000)
+        
+        # Analyze detected requests to extract app name
+        if detected_requests:
+            for url in detected_requests:
+                # Try multiple patterns
+                patterns = [
+                    r'/([a-z]+(?:-[a-z]+)?)-\d+/',  # aftersell-549
+                    r'//([a-z]+)\.(?:app|io|com)/',  # aftersell.app
+                    r'/post-purchase/[^/]+/([a-z]+)',  # /post-purchase/handle/aftersell
+                ]
+                
+                for pattern in patterns:
+                    match = re.search(pattern, url.lower())
+                    if match:
+                        app_raw = match.group(1)
+                        app_name_map = {
+                            'aftersell': 'AfterSell',
+                            'reconvert': 'ReConvert',
+                            'zipify': 'Zipify',
+                            'carthook': 'CartHook',
+                            'honeycomb': 'Honeycomb',
+                            'upsell': 'Upsell',
+                        }
+                        detected_app = app_name_map.get(app_raw, app_raw.title())
+                        break
+                
+                if detected_app:
+                    break
+        
+        return len(detected_requests) > 0, detected_app, detected_requests
     
     async def verify_store(self, store_url: str) -> VerificationResult:
         """
@@ -1072,15 +1282,6 @@ class ShopifyVerifier:
                         print(f"  Debug: Screenshot saved")
                     except:
                         pass
-                
-                # Detect homepage currency
-                result.homepage_currency = await self._detect_currency_from_page(page)
-                
-                # Check for currency selector
-                selector_found, currencies = await self._check_currency_selector(page)
-                result.currency_selector_found = selector_found
-                result.detected_currencies = currencies
-                result.multiple_currencies_supported = len(currencies) > 1
                 
                 # Step 2: Find a product
                 print("Finding a product...")
@@ -1129,7 +1330,22 @@ class ShopifyVerifier:
                 
                 print("Product added to cart")
                 
-                # Step 5: Navigate to checkout
+                # Step 5: Set up network monitoring BEFORE navigating to checkout
+                print("Setting up post-purchase monitoring...")
+                detected_requests = []
+                
+                def handle_request(request):
+                    url = request.url
+                    # Check for post-purchase patterns
+                    if 'post-purchase' in url.lower() or 'post_purchase' in url.lower() or 'ppShouldTrigger' in url:
+                        detected_requests.append(url)
+                        if self.debug:
+                            print(f"  📡 Detected: {url[:100]}")
+                
+                # Attach listener before navigation
+                page.on('request', handle_request)
+                
+                # Navigate to checkout
                 print("Navigating to checkout...")
                 checkout_reached = await self._navigate_to_checkout(page)
                 
@@ -1139,16 +1355,76 @@ class ShopifyVerifier:
                 
                 result.reached_checkout = True
                 print("Reached checkout page")
-                await page.wait_for_timeout(3000)  # Let checkout load
+                await page.wait_for_timeout(5000)  # Let checkout load and fire network requests
                 
-                # Step 6: Detect currency in checkout
-                result.checkout_currency = await self._detect_currency_from_page(page)
+                # Step 6: Test currency switching in checkout
+                print("Testing currency verification...")
+                currency_test = await self._test_currency_switch(page)
                 
-                # Step 7: Check for post-purchase upsell indicators
-                print("Checking for post-purchase upsells...")
-                upsell_detected, upsell_details = await self._detect_post_purchase_upsell(page)
-                result.post_purchase_upsell_detected = upsell_detected
-                result.post_purchase_details = upsell_details
+                result.available_countries = currency_test['available_countries']
+                result.country_currency_pairs = currency_test['country_currency_pairs']
+                result.currency_switch_tested = currency_test['tested']
+                result.currency_switch_successful = currency_test['currency_changed']
+                result.initial_currency = currency_test['initial_currency']
+                result.switched_currency = currency_test['switched_currency']
+                
+                # Determine if multi-currency is supported
+                unique_currencies = set(currency_test['country_currency_pairs'].values())
+                if len(unique_currencies) > 1 and currency_test['currency_changed']:
+                    result.multiple_currencies_supported = True
+                    print(f"  ✅ Multi-currency verified: {unique_currencies}")
+                elif len(currency_test['available_countries']) > 1:
+                    print(f"  ℹ️  Multiple countries available but single currency")
+                else:
+                    print(f"  ℹ️  Single market store")
+                
+                # Step 7: Analyze post-purchase network requests
+                print("Analyzing post-purchase upsells...")
+                result.post_purchase_requests = detected_requests
+                result.post_purchase_upsell_detected = len(detected_requests) > 0
+                
+                # Extract app name from detected requests
+                detected_app = None
+                if detected_requests:
+                    for url in detected_requests:
+                        # Try multiple patterns to extract app name
+                        patterns = [
+                            r'/([a-z]+(?:-[a-z]+)?)-\d+/',  # aftersell-549
+                            r'//([a-z]+)\.(?:app|io|com)/',  # aftersell.app
+                            r'/post-purchase/[^/]+/([a-z]+)',  # /post-purchase/handle/aftersell
+                        ]
+                        
+                        for pattern in patterns:
+                            match = re.search(pattern, url.lower())
+                            if match:
+                                app_raw = match.group(1)
+                                app_name_map = {
+                                    'aftersell': 'AfterSell',
+                                    'reconvert': 'ReConvert',
+                                    'zipify': 'Zipify',
+                                    'carthook': 'CartHook',
+                                    'honeycomb': 'Honeycomb',
+                                    'upsell': 'Upsell',
+                                }
+                                detected_app = app_name_map.get(app_raw, app_raw.title())
+                                break
+                        
+                        if detected_app:
+                            break
+                
+                result.post_purchase_app_name = detected_app
+                
+                if result.post_purchase_upsell_detected:
+                    if detected_app:
+                        print(f"  ✅ Post-purchase detected: {detected_app}")
+                    else:
+                        print(f"  ✅ Post-purchase detected (app unknown)")
+                    if self.debug:
+                        print(f"  Detected {len(detected_requests)} request(s):")
+                        for req in detected_requests[:3]:  # Show first 3
+                            print(f"    - {req[:100]}")
+                else:
+                    print(f"  No post-purchase upsells detected")
                 
                 # Mark as successful
                 result.success = True

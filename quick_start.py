@@ -42,11 +42,14 @@ async def main():
         if result.success:
             print(f"\n✓ SUCCESS")
             print(f"  Multi-currency support: {'Yes' if result.multiple_currencies_supported else 'No'}")
-            if result.detected_currencies:
-                print(f"  Currencies detected: {', '.join(result.detected_currencies)}")
+            if result.country_currency_pairs:
+                currencies = set(result.country_currency_pairs.values())
+                print(f"  Currencies detected: {', '.join(currencies)}")
+            print(f"  Countries available: {len(result.available_countries)}")
+            print(f"  Currency switch tested: {'Yes' if result.currency_switch_tested else 'No'}")
             print(f"  Post-purchase upsell: {'Yes' if result.post_purchase_upsell_detected else 'No'}")
-            if result.post_purchase_details:
-                print(f"  Upsell details: {result.post_purchase_details}")
+            if result.post_purchase_app_name:
+                print(f"  Upsell app: {result.post_purchase_app_name}")
         else:
             print(f"\n✗ FAILED: {result.error_message}")
     

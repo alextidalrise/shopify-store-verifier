@@ -39,17 +39,23 @@ async def test_single_store(store_url: str, headless: bool = False, debug: bool 
     if result.error_message:
         print(f"\nError: {result.error_message}")
     
-    print(f"\n--- Currency Detection ---")
-    print(f"Currency selector found: {result.currency_selector_found}")
+    print(f"\n--- Currency Verification ---")
     print(f"Multiple currencies supported: {result.multiple_currencies_supported}")
-    print(f"Detected currencies: {result.detected_currencies}")
-    print(f"Homepage currency: {result.homepage_currency}")
-    print(f"Checkout currency: {result.checkout_currency}")
+    print(f"Available countries: {len(result.available_countries)} - {result.available_countries[:5]}{'...' if len(result.available_countries) > 5 else ''}")
+    print(f"Country-currency pairs detected: {result.country_currency_pairs}")
+    print(f"Currency switch tested: {result.currency_switch_tested}")
+    print(f"Currency switch successful: {result.currency_switch_successful}")
+    print(f"Initial currency: {result.initial_currency}")
+    print(f"Switched currency: {result.switched_currency}")
     
     print(f"\n--- Post-Purchase Upsells ---")
     print(f"Detected: {result.post_purchase_upsell_detected}")
-    if result.post_purchase_details:
-        print(f"Details: {result.post_purchase_details}")
+    if result.post_purchase_app_name:
+        print(f"App: {result.post_purchase_app_name}")
+    if result.post_purchase_requests:
+        print(f"Requests detected: {len(result.post_purchase_requests)}")
+        for req in result.post_purchase_requests[:2]:
+            print(f"  - {req[:80]}...")
     
     print(f"\n--- Debug Info ---")
     print(f"Product URL: {result.product_url}")
