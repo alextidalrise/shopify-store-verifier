@@ -122,9 +122,11 @@ Open the CSV file in Excel or Google Sheets:
 |--------|---------------|
 | `store_url` | The store you tested |
 | `success` | TRUE if verification completed |
-| `multiple_currencies_supported` | TRUE if store has multiple currencies |
-| `detected_currencies` | List like "USD, GBP, EUR" |
+| `multiple_currencies_supported` | TRUE if store has multiple currencies (tested via switching) |
+| `country_currency_pairs` | Dict like {"US": "USD", "GB": "GBP"} |
+| `currency_switch_successful` | TRUE if currency actually changed |
 | `post_purchase_upsell_detected` | TRUE if post-purchase upsells found |
+| `post_purchase_app_name` | App name (e.g., "AfterSell") |
 | `reached_checkout` | TRUE if bot reached checkout page |
 
 ### Quick Analysis
@@ -287,8 +289,8 @@ with open("results/results_20260115_143022.json") as f:
 # Stores with USD and EUR
 multi_currency = [
     r for r in results 
-    if 'USD' in r['detected_currencies'] 
-    and 'EUR' in r['detected_currencies']
+    if 'USD' in r.get('country_currency_pairs', {}).values() 
+    and 'EUR' in r.get('country_currency_pairs', {}).values()
 ]
 
 print(f"Found {len(multi_currency)} stores with USD and EUR")

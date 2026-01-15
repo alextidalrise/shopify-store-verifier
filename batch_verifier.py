@@ -82,12 +82,15 @@ class BatchVerifier:
                 'success',
                 'error_message',
                 'multiple_currencies_supported',
-                'currency_selector_found',
-                'detected_currencies',
-                'homepage_currency',
-                'checkout_currency',
+                'available_countries',
+                'country_currency_pairs',
+                'currency_switch_tested',
+                'currency_switch_successful',
+                'initial_currency',
+                'switched_currency',
                 'post_purchase_upsell_detected',
-                'post_purchase_details',
+                'post_purchase_app_name',
+                'post_purchase_requests',
                 'product_url',
                 'reached_checkout',
             ])
@@ -95,8 +98,10 @@ class BatchVerifier:
             
             for result in results:
                 row = result.to_dict()
-                # Convert list to string for CSV
-                row['detected_currencies'] = ', '.join(row['detected_currencies'])
+                # Convert lists/dicts to strings for CSV
+                row['available_countries'] = ', '.join(row['available_countries']) if row['available_countries'] else ''
+                row['country_currency_pairs'] = json.dumps(row['country_currency_pairs']) if row['country_currency_pairs'] else '{}'
+                row['post_purchase_requests'] = str(len(row['post_purchase_requests'])) + ' requests' if row['post_purchase_requests'] else '0 requests'
                 writer.writerow(row)
         
         print(f"\nResults saved to: {filepath}")
@@ -207,7 +212,7 @@ class BatchVerifier:
         failed = total - successful
         
         multiple_currencies = sum(1 for r in results if r.multiple_currencies_supported)
-        currency_selector = sum(1 for r in results if r.currency_selector_found)
+        currency_switch_tested = sum(1 for r in results if r.currency_switch_tested)
         post_purchase = sum(1 for r in results if r.post_purchase_upsell_detected)
         reached_checkout = sum(1 for r in results if r.reached_checkout)
         
@@ -218,7 +223,7 @@ class BatchVerifier:
             "success_rate": f"{(successful/total*100):.1f}%" if total > 0 else "0%",
             "multiple_currencies_count": multiple_currencies,
             "multiple_currencies_percentage": f"{(multiple_currencies/total*100):.1f}%" if total > 0 else "0%",
-            "currency_selector_count": currency_selector,
+            "currency_switch_tested_count": currency_switch_tested,
             "post_purchase_upsell_count": post_purchase,
             "post_purchase_upsell_percentage": f"{(post_purchase/total*100):.1f}%" if total > 0 else "0%",
             "reached_checkout_count": reached_checkout,

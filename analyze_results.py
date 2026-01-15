@@ -57,7 +57,10 @@ class ResultsAnalyzer:
         """Get distribution of detected currencies."""
         all_currencies = []
         for result in self.results:
-            all_currencies.extend(result.get('detected_currencies', []))
+            # Get currencies from country_currency_pairs dict
+            pairs = result.get('country_currency_pairs', {})
+            if pairs:
+                all_currencies.extend(pairs.values())
         return dict(Counter(all_currencies))
     
     def get_error_distribution(self) -> Dict[str, int]:
@@ -76,10 +79,14 @@ class ResultsAnalyzer:
                     writer = csv.DictWriter(f, fieldnames=filtered_results[0].keys())
                     writer.writeheader()
                     for row in filtered_results:
-                        # Convert lists to strings for CSV
+                        # Convert lists/dicts to strings for CSV
                         csv_row = row.copy()
-                        if isinstance(csv_row.get('detected_currencies'), list):
-                            csv_row['detected_currencies'] = ', '.join(csv_row['detected_currencies'])
+                        if isinstance(csv_row.get('available_countries'), list):
+                            csv_row['available_countries'] = ', '.join(csv_row['available_countries'])
+                        if isinstance(csv_row.get('country_currency_pairs'), dict):
+                            csv_row['country_currency_pairs'] = json.dumps(csv_row['country_currency_pairs'])
+                        if isinstance(csv_row.get('post_purchase_requests'), list):
+                            csv_row['post_purchase_requests'] = f"{len(csv_row['post_purchase_requests'])} requests"
                         writer.writerow(csv_row)
         print(f"Exported {len(filtered_results)} results to {output_file}")
     
@@ -154,7 +161,10 @@ def main():
         print("   Sample stores:")
         for store in elite_stores[:5]:
             print(f"   - {store['store_url']}")
-            print(f"     Currencies: {', '.join(store['detected_currencies'])}")
+            currencies = set(store.get('country_currency_pairs', {}).values())
+            print(f"     Currencies: {', '.join(currencies)}")
+            if store.get('post_purchase_app_name'):
+                print(f"     Post-purchase app: {store['post_purchase_app_name']}")
     
     # Stores with multi-currency only
     multi_currency_only = analyzer.filter_by_criteria(
@@ -191,7 +201,7 @@ analyzer = ResultsAnalyzer('results/results_20260115_143022.json')
 
 # Get stores with specific currency
 usd_stores = [r for r in analyzer.results 
-              if 'USD' in r.get('detected_currencies', [])]
+              if 'USD' in r.get('country_currency_pairs', {}).values()]
 
 # Get all successful verifications
 successful = analyzer.filter_by_criteria(success=True)

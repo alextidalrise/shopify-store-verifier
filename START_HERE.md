@@ -91,10 +91,11 @@ Every verification produces:
 | Field | What It Tells You |
 |-------|-------------------|
 | `multiple_currencies_supported` | Store has currency options (TRUE/FALSE) |
-| `detected_currencies` | List of currencies (e.g., "USD, GBP, EUR") |
-| `checkout_currency` | Currency shown at checkout |
+| `country_currency_pairs` | Dict of country→currency (e.g., {"US": "USD", "GB": "GBP"}) |
+| `currency_switch_successful` | Currency actually changed when country changed (TRUE/FALSE) |
+| `initial_currency` / `switched_currency` | Currencies detected during test |
 | `post_purchase_upsell_detected` | Post-purchase upsells found (TRUE/FALSE) |
-| `post_purchase_details` | Which upsell app/indicators detected |
+| `post_purchase_app_name` | Which upsell app detected (e.g., "AfterSell") |
 
 ## Performance
 

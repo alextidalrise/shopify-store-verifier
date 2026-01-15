@@ -56,7 +56,8 @@ async def main():
     
     print(f"Multiple currencies: {result.multiple_currencies_supported}")
     print(f"Post-purchase upsells: {result.post_purchase_upsell_detected}")
-    print(f"Detected currencies: {result.detected_currencies}")
+    print(f"Currency pairs: {result.country_currency_pairs}")
+    print(f"Post-purchase app: {result.post_purchase_app_name}")
 
 asyncio.run(main())
 ```
@@ -178,13 +179,16 @@ Each verification result contains:
 | `store_url` | The store URL that was verified |
 | `success` | Whether verification completed successfully |
 | `error_message` | Error details if verification failed |
-| `multiple_currencies_supported` | Boolean: Store supports multiple currencies |
-| `currency_selector_found` | Boolean: Currency selector UI element found |
-| `detected_currencies` | List of currency codes found (e.g., ["USD", "GBP", "EUR"]) |
-| `homepage_currency` | Currency detected on homepage |
-| `checkout_currency` | Currency detected in checkout |
-| `post_purchase_upsell_detected` | Boolean: Post-purchase upsell detected |
-| `post_purchase_details` | Details about detected upsell indicators |
+| `multiple_currencies_supported` | Boolean: Store supports multiple currencies (tested via switching) |
+| `available_countries` | List of countries in checkout selector |
+| `country_currency_pairs` | Dict mapping countries to currencies (e.g., {"US": "USD", "GB": "GBP"}) |
+| `currency_switch_tested` | Boolean: Currency switching was tested |
+| `currency_switch_successful` | Boolean: Currency actually changed when country changed |
+| `initial_currency` | Currency detected initially (e.g., "USD") |
+| `switched_currency` | Currency after switching country (e.g., "GBP") |
+| `post_purchase_upsell_detected` | Boolean: Post-purchase upsell detected via network monitoring |
+| `post_purchase_app_name` | Name of detected post-purchase app (e.g., "AfterSell", "ReConvert") |
+| `post_purchase_requests` | List of network requests that indicated post-purchase apps |
 | `product_url` | URL of product used for testing |
 | `reached_checkout` | Boolean: Successfully reached checkout page |
 
@@ -290,10 +294,11 @@ async def process_stores_custom():
         
         # Custom processing
         if result.multiple_currencies_supported:
-            print(f"{store} supports: {result.detected_currencies}")
+            currencies = set(result.country_currency_pairs.values())
+            print(f"{store} supports: {currencies}")
         
         if result.post_purchase_upsell_detected:
-            print(f"{store} has upsells: {result.post_purchase_details}")
+            print(f"{store} has upsells: {result.post_purchase_app_name}")
 ```
 
 ### Filtering Results
