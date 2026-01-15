@@ -448,6 +448,13 @@ class ShopifyVerifier:
         """
         variant_selected = False
         
+        # Scroll down a bit to ensure variant selectors are in view
+        try:
+            await page.evaluate("window.scrollBy(0, 300)")
+            await page.wait_for_timeout(500)
+        except:
+            pass
+        
         # Strategy 1: Dropdown selectors (traditional)
         try:
             variant_selectors = await page.locator('select[name*="option"], select[id*="variant"]').count()
@@ -504,13 +511,14 @@ class ShopifyVerifier:
             'fieldset',
             # Radio groups
             '[role="radiogroup"]',
-            # Common Shopify variant containers
-            'div[class*="variant"]',
-            'div[class*="option"]',
-            'div[class*="product-form__input"]',
-            # Product option containers
+            # Product option containers with data attributes (most specific)
             'div[data-product-option]',
+            # Shopify-specific variant containers
             'div[class*="ProductOption"]',
+            'div[class*="product-form__input"]',
+            # Generic variant containers (less specific, checked last)
+            'div[class*="variant-selector"]',
+            'div[class*="product-variant"]',
         ]
         
         for container_pattern in container_patterns:
@@ -521,10 +529,15 @@ class ShopifyVerifier:
                 if container_count == 0:
                     continue
                 
-                print(f"  Found {container_count} variant container(s): {container_pattern}")
+                # Don't process if we found way too many (likely false matches)
+                if container_count > 20:
+                    print(f"  Skipping {container_pattern}: found {container_count} (too many, likely false matches)")
+                    continue
+                
+                print(f"  Found {container_count} potential variant container(s): {container_pattern}")
                 
                 # Process each container (e.g., one for Size, one for Color)
-                for container_idx in range(min(container_count, 5)):  # Max 5 variant types
+                for container_idx in range(min(container_count, 10)):  # Max 10 variant types
                     try:
                         container = containers.nth(container_idx)
                         
@@ -630,9 +643,82 @@ class ShopifyVerifier:
             except:
                 continue
         
+        # Strategy 3: Direct button/radio search (no container)
+        # If container approach didn't work, try to find variant buttons directly
+        if not variant_selected:
+            print(f"  Container approach didn't find variants, trying direct search...")
+            
+            direct_patterns = [
+                'input[type="radio"][name*="option"]',
+                'input[type="radio"][name*="Size"]',
+                'input[type="radio"][name*="Color"]',
+                'button[data-variant]',
+                'label[for*="variant-"]',
+                'label[for*="option-"]',
+            ]
+            
+            for direct_pattern in direct_patterns:
+                try:
+                    options = page.locator(direct_pattern)
+                    option_count = await options.count()
+                    
+                    if option_count == 0 or option_count > 50:  # Skip if none or too many
+                        continue
+                    
+                    print(f"    Found {option_count} variant options: {direct_pattern}")
+                    
+                    # Try to click first available
+                    for opt_idx in range(min(option_count, 10)):
+                        try:
+                            option = options.nth(opt_idx)
+                            
+                            if not await option.is_visible(timeout=500):
+                                continue
+                            
+                            # Check if disabled
+                            classes = await option.get_attribute('class') or ''
+                            disabled_attr = await option.get_attribute('disabled')
+                            
+                            if disabled_attr is not None or 'disabled' in classes.lower():
+                                continue
+                            
+                            # Get option text
+                            option_text = "option"
+                            try:
+                                option_text = (await option.get_attribute('value') or 
+                                             await option.text_content() or 
+                                             f"#{opt_idx + 1}")[:20]
+                            except:
+                                pass
+                            
+                            print(f"    Selecting: {option_text}")
+                            await option.click(timeout=2000, force=False)
+                            await page.wait_for_timeout(800)
+                            
+                            variant_selected = True
+                            print(f"    ✓ Variant selected")
+                            break
+                            
+                        except:
+                            continue
+                    
+                    if variant_selected:
+                        break
+                        
+                except:
+                    continue
+        
         # If no variants found, that might be okay (some products don't have variants)
         if not variant_selected:
             print(f"  No variants detected (product may not require variant selection)")
+            
+            # In debug mode, take a screenshot to see what's on the page
+            if self.debug:
+                try:
+                    await page.screenshot(path=f"debug_no_variants_{page.url.split('/')[-1][:30]}.png")
+                    print(f"  Debug: Saved screenshot of page without variants")
+                except:
+                    pass
         
         return True  # Return True even if no variants (might not be required)
     
