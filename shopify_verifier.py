@@ -881,11 +881,108 @@ class ShopifyVerifier:
     async def _find_product_page(self, page: Page, base_url: str) -> Optional[str]:
         """
         Find a product page to test with.
+        Optimized strategy:
+        1. Check homepage for direct product links (fastest)
+        2. Check homepage for collection links, navigate to collection, find product
+        3. Try /collections/all (fallback, sometimes blocked)
+        4. Use products.json API (last resort)
         
         Returns:
             Product URL or None
         """
-        # Strategy 1: Try /collections/all
+        
+        # We should already be on homepage from earlier, but ensure we're there
+        current_url = page.url
+        if not current_url.startswith(base_url):
+            try:
+                await page.goto(base_url, wait_until="domcontentloaded", timeout=self.timeout)
+                await page.wait_for_timeout(1500)
+            except:
+                pass
+        
+        # Strategy 1: Look for products directly on homepage (fastest!)
+        try:
+            print("  Checking homepage for product links...")
+            product_links = page.locator('a[href*="/products/"]')
+            count = await product_links.count()
+            
+            if count > 0:
+                print(f"  Found {count} product link(s) on homepage")
+                # Get first product link
+                href = await product_links.first.get_attribute('href')
+                if href:
+                    if href.startswith('http'):
+                        product_url = href
+                    else:
+                        product_url = base_url + href if href.startswith('/') else base_url + '/' + href
+                    print(f"  ✓ Using product from homepage")
+                    return product_url
+        except Exception as e:
+            if self.debug:
+                print(f"  Homepage product search failed: {str(e)[:50]}")
+        
+        # Strategy 2: Look for collection links on homepage, then navigate to collection
+        try:
+            print("  Checking homepage for collection links...")
+            # Common collection link patterns
+            collection_patterns = [
+                'a[href*="/collections/"]:not([href*="/collections/all"])',  # Any collection except "all"
+                'a[href*="/collection/"]',  # Some themes use singular
+            ]
+            
+            for pattern in collection_patterns:
+                collection_links = page.locator(pattern)
+                count = await collection_links.count()
+                
+                if count > 0:
+                    print(f"  Found {count} collection link(s) on homepage")
+                    # Try first few collections
+                    for i in range(min(count, 3)):  # Try up to 3 collections
+                        try:
+                            href = await collection_links.nth(i).get_attribute('href')
+                            if not href:
+                                continue
+                            
+                            # Build full URL
+                            if href.startswith('http'):
+                                collection_url = href
+                            else:
+                                collection_url = base_url + href if href.startswith('/') else base_url + '/' + href
+                            
+                            # Extract collection name for logging
+                            collection_name = href.split('/')[-1] if '/' in href else href
+                            print(f"  Navigating to collection: {collection_name}")
+                            
+                            await page.goto(collection_url, wait_until="domcontentloaded", timeout=self.timeout)
+                            await page.wait_for_timeout(1500)
+                            
+                            # Close any pop-ups
+                            await self._close_popups(page, max_attempts=1)
+                            
+                            # Find product in collection
+                            product_links = page.locator('a[href*="/products/"]')
+                            product_count = await product_links.count()
+                            
+                            if product_count > 0:
+                                product_href = await product_links.first.get_attribute('href')
+                                if product_href:
+                                    if product_href.startswith('http'):
+                                        product_url = product_href
+                                    else:
+                                        product_url = base_url + product_href if product_href.startswith('/') else base_url + '/' + product_href
+                                    print(f"  ✓ Found product in collection")
+                                    return product_url
+                        except Exception as e:
+                            if self.debug:
+                                print(f"    Collection {i+1} failed: {str(e)[:40]}")
+                            continue
+                    
+                    break  # If we found collections but no products, don't try other patterns
+        except Exception as e:
+            if self.debug:
+                print(f"  Collection search failed: {str(e)[:50]}")
+        
+        # Strategy 3: Try /collections/all (some stores block this)
         try:
             print("  Trying /collections/all...")
             await page.goto(f"{base_url}/collections/all", wait_until="domcontentloaded", timeout=self.timeout)
@@ -908,29 +1005,7 @@ class ShopifyVerifier:
             print(f"  /collections/all failed: {str(e)[:50]}")
             pass
         
-        # Strategy 2: Try homepage
-        try:
-            print("  Trying homepage for products...")
-            await page.goto(base_url, wait_until="domcontentloaded", timeout=self.timeout)
-            await page.wait_for_timeout(2000)
-            
-            # Close any pop-ups
-            await self._close_popups(page, max_attempts=1)
-            
-            product_links = page.locator('a[href*="/products/"]')
-            count = await product_links.count()
-            if count > 0:
-                href = await product_links.first.get_attribute('href')
-                if href:
-                    if href.startswith('http'):
-                        return href
-                    return base_url + href if href.startswith('/') else base_url + '/' + href
-            print("  No products found on homepage")
-        except Exception as e:
-            print(f"  Homepage search failed: {str(e)[:50]}")
-            pass
-        
-        # Strategy 3: Use products.json API
+        # Strategy 4: Use products.json API (last resort)
         try:
             print("  Trying products.json API...")
             response = await page.request.get(f"{base_url}/products.json?limit=1")
@@ -939,7 +1014,7 @@ class ShopifyVerifier:
                 if data.get('products') and len(data['products']) > 0:
                     handle = data['products'][0].get('handle')
                     if handle:
-                        print(f"  Found product via API: {handle}")
+                        print(f"  ✓ Found product via API: {handle}")
                         return f"{base_url}/products/{handle}"
                 print("  No products found in API response")
             else:
@@ -948,7 +1023,7 @@ class ShopifyVerifier:
             print(f"  API request failed: {str(e)[:50]}")
             pass
         
-        print("  Could not find any products using any strategy")
+        print("  ✗ Could not find any products using any strategy")
         return None
     
     async def _navigate_to_checkout(self, page: Page) -> bool:
