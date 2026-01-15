@@ -437,6 +437,112 @@ class ShopifyVerifier:
         
         return False, []
     
+    async def _select_variant(self, page: Page) -> bool:
+        """
+        Select a product variant (size, color, etc.) if required.
+        Handles both dropdown selectors and button/swatch selectors.
+        
+        Returns:
+            True if a variant was selected (or not needed), False if failed
+        """
+        variant_selected = False
+        
+        # Strategy 1: Dropdown selectors (traditional)
+        try:
+            variant_selectors = await page.locator('select[name*="option"], select[id*="variant"]').count()
+            if variant_selectors > 0:
+                print(f"  Found {variant_selectors} dropdown variant selector(s)")
+                selects = page.locator('select[name*="option"], select[id*="variant"]')
+                count = await selects.count()
+                for i in range(count):
+                    try:
+                        await selects.nth(i).select_option(index=1, timeout=2000)
+                        print(f"    Selected option from dropdown {i+1}")
+                        variant_selected = True
+                    except:
+                        pass
+                await page.wait_for_timeout(500)
+                return True
+        except:
+            pass
+        
+        # Strategy 2: Button/swatch selectors (modern themes like Allbirds)
+        button_patterns = [
+            # Size/variant buttons with various attributes
+            'button[data-variant]',
+            'button[data-option-value]',
+            'input[type="radio"][name*="option"]',
+            'input[type="radio"][name*="Size"]',
+            'input[type="radio"][name*="Color"]',
+            # Common class patterns
+            '[class*="variant-button"]',
+            '[class*="size-button"]',
+            '[class*="swatch"]',
+            '[class*="ProductOption"]',
+            # Fieldset-based variants (common pattern)
+            'fieldset input[type="radio"]',
+            'fieldset button',
+            # Label-based radio buttons
+            'label[for*="option"]',
+            'label[for*="variant"]',
+        ]
+        
+        for pattern in button_patterns:
+            try:
+                elements = page.locator(pattern)
+                count = await elements.count()
+                
+                if count > 0:
+                    print(f"  Found {count} button/swatch variant(s) with pattern: {pattern}")
+                    
+                    # Try to find first available (not sold out) option
+                    for i in range(min(count, 10)):  # Check first 10 options
+                        try:
+                            element = elements.nth(i)
+                            
+                            # Check if it's visible and not disabled
+                            if await element.is_visible(timeout=1000):
+                                # Check for "sold out" or "disabled" indicators
+                                classes = await element.get_attribute('class') or ''
+                                aria_disabled = await element.get_attribute('aria-disabled') or ''
+                                disabled = await element.get_attribute('disabled')
+                                
+                                if ('sold-out' in classes.lower() or 
+                                    'disabled' in classes.lower() or
+                                    aria_disabled == 'true' or
+                                    disabled is not None):
+                                    continue
+                                
+                                # Try to get the variant name for logging
+                                try:
+                                    variant_name = await element.get_attribute('value') or await element.text_content() or f"#{i+1}"
+                                    print(f"    Selecting variant: {variant_name[:20]}")
+                                except:
+                                    print(f"    Selecting variant option #{i+1}")
+                                
+                                # Click or check the element
+                                await element.click(timeout=2000, force=False)
+                                await page.wait_for_timeout(800)  # Wait for any JS to update
+                                variant_selected = True
+                                print(f"    ✓ Variant selected successfully")
+                                return True
+                                
+                        except Exception as e:
+                            continue
+                    
+                    # If we found elements but couldn't select any
+                    if not variant_selected:
+                        print(f"    Warning: Found variants but none were selectable")
+                        
+            except:
+                continue
+        
+        # If no variants found, that might be okay (some products don't have variants)
+        if not variant_selected:
+            print(f"  No variants detected (product may not require variant selection)")
+        
+        return True  # Return True even if no variants (might not be required)
+    
     async def _find_and_click_add_to_cart(self, page: Page) -> bool:
         """
         Find and click the 'Add to Cart' button.
@@ -446,41 +552,56 @@ class ShopifyVerifier:
             True if successfully added to cart
         """
         # First, try to select a variant if needed
-        try:
-            # Check for variant selectors (size, color, etc.)
-            variant_selectors = await page.locator('select[name*="option"], select[id*="variant"]').count()
-            if variant_selectors > 0:
-                # Select first available option in each dropdown
-                selects = page.locator('select[name*="option"], select[id*="variant"]')
-                count = await selects.count()
-                for i in range(count):
-                    try:
-                        await selects.nth(i).select_option(index=1, timeout=2000)
-                    except:
-                        pass
-                await page.wait_for_timeout(500)
-        except:
-            pass
+        print("  Checking for product variants (size, color, etc.)...")
+        await self._select_variant(page)
+        
+        # Wait a bit for add-to-cart button to appear/enable after variant selection
+        await page.wait_for_timeout(1000)
         
         # Try each add to cart pattern
+        print(f"  Looking for add to cart button...")
         for i, pattern in enumerate(self.ADD_TO_CART_PATTERNS, 1):
             try:
                 button = page.locator(pattern).first
                 if await button.count() > 0:
-                    # Check if button is visible and enabled
-                    if await button.is_visible(timeout=2000) and await button.is_enabled(timeout=1000):
-                        print(f"  Found add to cart button (pattern {i}/{len(self.ADD_TO_CART_PATTERNS)}): {pattern}")
-                        await button.click(timeout=5000)
-                        await page.wait_for_timeout(2000)  # Wait for cart to update
-                        print(f"  Successfully clicked add to cart button")
-                        return True
+                    # Check if button is visible
+                    if await button.is_visible(timeout=2000):
+                        # Check if it's enabled (wait up to 3 seconds for it to become enabled)
+                        try:
+                            # Wait for button to be enabled (important for stores that enable after variant selection)
+                            await page.wait_for_timeout(500)
+                            is_enabled = await button.is_enabled(timeout=2000)
+                            
+                            if is_enabled:
+                                print(f"  ✓ Found enabled add to cart button (pattern {i}/{len(self.ADD_TO_CART_PATTERNS)})")
+                                print(f"    Pattern: {pattern}")
+                                
+                                # Get button text for confirmation
+                                try:
+                                    button_text = await button.text_content()
+                                    if button_text:
+                                        print(f"    Button text: {button_text.strip()[:30]}")
+                                except:
+                                    pass
+                                
+                                await button.click(timeout=5000)
+                                await page.wait_for_timeout(2000)  # Wait for cart to update
+                                print(f"  ✓ Successfully clicked add to cart button")
+                                return True
+                            else:
+                                if i <= 3:
+                                    print(f"    Pattern {i}: Button found but disabled")
+                        except:
+                            if i <= 3:
+                                print(f"    Pattern {i}: Button not enabled")
+                            continue
             except Exception as e:
                 # Log more details about failures
                 if i <= 3:  # Only log first few attempts to avoid spam
-                    print(f"  Pattern {i} failed: {pattern} - {str(e)[:50]}")
+                    print(f"    Pattern {i} check failed: {str(e)[:50]}")
                 continue
         
-        print(f"  Failed to find add to cart button after trying {len(self.ADD_TO_CART_PATTERNS)} patterns")
+        print(f"  ✗ Failed to find enabled add to cart button after trying {len(self.ADD_TO_CART_PATTERNS)} patterns")
         return False
     
     async def _find_product_page(self, page: Page, base_url: str) -> Optional[str]:
