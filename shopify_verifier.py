@@ -176,318 +176,6 @@ class ShopifyVerifier:
         parsed = urlparse(url)
         return f"{parsed.scheme}://{parsed.netloc}"
     
-    async def _select_variant(self, page: Page) -> bool:
-        """
-        Select a product variant (size, color, etc.) if required.
-        Handles both dropdown selectors and button/swatch selectors.
-        Uses a generic approach that works for any variant type.
-        
-        Returns:
-            True if a variant was selected (or not needed), False if failed
-        """
-        variant_selected = False
-        
-        # Scroll down a bit to ensure variant selectors are in view
-        try:
-            await page.evaluate("window.scrollBy(0, 300)")
-            await page.wait_for_timeout(500)
-        except:
-            pass
-        
-        # Strategy 1: Dropdown selectors (traditional)
-        try:
-            variant_selectors = await page.locator('select[name*="option"], select[id*="variant"]').count()
-            if variant_selectors > 0:
-                print(f"  Found {variant_selectors} dropdown variant selector(s)")
-                selects = page.locator('select[name*="option"], select[id*="variant"]')
-                count = await selects.count()
-                for i in range(count):
-                    try:
-                        await selects.nth(i).select_option(index=1, timeout=2000)
-                        print(f"    Selected option from dropdown {i+1}")
-                        variant_selected = True
-                    except:
-                        pass
-                await page.wait_for_timeout(500)
-                return True
-        except:
-            pass
-        
-        # Strategy 1.5: Look for and handle variant group tabs (like MEN'S/WOMEN'S SIZES)
-        # These are often containers that need to be activated before selecting the actual variant
-        tab_container_patterns = [
-            'fieldset legend',  # Common pattern: <fieldset><legend>Size</legend><buttons...>
-            '[role="radiogroup"]',
-            'div[class*="variant"] > div[class*="tab"]',
-            'div[class*="option"] > button[role="tab"]',
-        ]
-        
-        # Check if there are tab-like containers and ensure one is active
-        for container_pattern in tab_container_patterns:
-            try:
-                containers = page.locator(container_pattern)
-                count = await containers.count()
-                if count > 0:
-                    # Click the first tab/group to ensure it's active
-                    first_tab = containers.first
-                    if await first_tab.is_visible(timeout=1000):
-                        try:
-                            await first_tab.click(timeout=2000)
-                            await page.wait_for_timeout(500)
-                            print(f"    Clicked variant group/tab to activate options")
-                        except:
-                            pass  # May already be active
-                    break
-            except:
-                continue
-        
-        # Strategy 2: Generic container-based variant selection
-        # Find variant containers, then select first available option within them
-        # This works for ANY variant type (size, color, material, etc.)
-        
-        container_patterns = [
-            # Fieldset is the most semantic container for form options
-            'fieldset',
-            # Radio groups
-            '[role="radiogroup"]',
-            # Product option containers with data attributes (most specific)
-            'div[data-product-option]',
-            # Shopify-specific variant containers
-            'div[class*="ProductOption"]',
-            'div[class*="product-form__input"]',
-            # Generic variant containers (less specific, checked last)
-            'div[class*="variant-selector"]',
-            'div[class*="product-variant"]',
-        ]
-        
-        for container_pattern in container_patterns:
-            try:
-                containers = page.locator(container_pattern)
-                container_count = await containers.count()
-                
-                if container_count == 0:
-                    continue
-                
-                # Don't process if we found way too many (likely false matches)
-                if container_count > 20:
-                    print(f"  Skipping {container_pattern}: found {container_count} (too many, likely false matches)")
-                    continue
-                
-                print(f"  Found {container_count} potential variant container(s): {container_pattern}")
-                
-                # Process each container (e.g., one for Size, one for Color)
-                for container_idx in range(min(container_count, 10)):  # Max 10 variant types
-                    try:
-                        container = containers.nth(container_idx)
-                        
-                        # Skip if not visible
-                        if not await container.is_visible(timeout=1000):
-                            continue
-                        
-                        # Get container label/name for logging
-                        container_name = "unknown"
-                        try:
-                            # Try to find a label or legend
-                            label_elem = await container.locator('legend, label, [class*="label"]').first.text_content()
-                            if label_elem:
-                                container_name = label_elem.strip()[:30]
-                        except:
-                            pass
-                        
-                        print(f"    Variant group: {container_name}")
-                        
-                        # Within this container, find clickable variant options
-                        # Look for various types of selectable elements
-                        option_selectors = [
-                            'input[type="radio"]',  # Radio buttons
-                            'button:not([disabled])',  # Enabled buttons
-                            'label[for]',  # Labels (often wrap hidden radios)
-                            '[role="radio"]',  # ARIA radio role
-                            'a[class*="swatch"]',  # Swatch links
-                        ]
-                        
-                        for option_selector in option_selectors:
-                            options = container.locator(option_selector)
-                            option_count = await options.count()
-                            
-                            if option_count == 0:
-                                continue
-                            
-                            print(f"      Found {option_count} options ({option_selector})")
-                            
-                            # Try to select first available option
-                            for opt_idx in range(min(option_count, 15)):  # Try up to 15 options
-                                try:
-                                    option = options.nth(opt_idx)
-                                    
-                                    # Check if visible
-                                    if not await option.is_visible(timeout=500):
-                                        continue
-                                    
-                                    # Check if disabled/sold-out
-                                    classes = await option.get_attribute('class') or ''
-                                    aria_disabled = await option.get_attribute('aria-disabled') or ''
-                                    disabled_attr = await option.get_attribute('disabled')
-                                    aria_checked = await option.get_attribute('aria-checked') or ''
-                                    
-                                    # Skip if disabled or sold out
-                                    if (disabled_attr is not None or
-                                        aria_disabled == 'true' or
-                                        'sold-out' in classes.lower() or
-                                        'unavailable' in classes.lower() or
-                                        'disabled' in classes.lower()):
-                                        continue
-                                    
-                                    # Skip if already selected/checked
-                                    if aria_checked == 'true':
-                                        print(f"      Option {opt_idx + 1} already selected")
-                                        variant_selected = True
-                                        break
-                                    
-                                    # Try to get option value/text for logging
-                                    option_text = "option"
-                                    try:
-                                        option_text = (await option.get_attribute('value') or 
-                                                     await option.get_attribute('aria-label') or
-                                                     await option.text_content() or
-                                                     f"#{opt_idx + 1}")
-                                        option_text = option_text.strip()[:20]
-                                    except:
-                                        pass
-                                    
-                                    # Skip buttons that are clearly not variant selectors
-                                    # These are informational buttons, not selection buttons
-                                    if option_selector == 'button:not([disabled])':
-                                        non_variant_keywords = [
-                                            'size chart', 'size guide', 'fit guide', 'sizing',
-                                            'chart', 'guide', 'info', 'learn more', 'help',
-                                            'measure', 'find your size'
-                                        ]
-                                        text_lower = option_text.lower()
-                                        if any(keyword in text_lower for keyword in non_variant_keywords):
-                                            print(f"      Skipping non-variant button: {option_text}")
-                                            continue
-                                    
-                                    print(f"      Selecting: {option_text}")
-                                    
-                                    # Click the option
-                                    await option.click(timeout=2000, force=False)
-                                    await page.wait_for_timeout(800)  # Wait for JS updates
-                                    
-                                    variant_selected = True
-                                    print(f"      ✓ Variant selected")
-                                    break  # Move to next container
-                                    
-                                except Exception as e:
-                                    continue
-                            
-                            # If we selected something in this container, move to next container
-                            if variant_selected:
-                                break
-                        
-                    except Exception as e:
-                        continue
-                
-                # If we found and processed containers, stop looking
-                if variant_selected or container_count > 0:
-                    break
-                    
-            except:
-                continue
-        
-        # Strategy 3: Direct button/radio search (no container)
-        # If container approach didn't work, try to find variant buttons directly
-        if not variant_selected:
-            print(f"  Container approach didn't find variants, trying direct search...")
-            
-            direct_patterns = [
-                # Allbirds-style: buttons inside list items (from browser inspection)
-                'list button',
-                'ul button',
-                '[role="list"] button',
-                # Buttons with aria-label containing "size" or "select"
-                'button[aria-label*="size" i]',
-                'button[aria-label*="Select" i]',
-                # Allbirds-style: buttons with "Select size" text
-                'button:has-text("Select size")',
-                # Radio inputs
-                'input[type="radio"][name*="option"]',
-                'input[type="radio"][name*="Size"]',
-                'input[type="radio"][name*="Color"]',
-                # Variant buttons with data attributes
-                'button[data-variant]',
-                'button[data-option-value]',
-                # Labels (often wrap hidden radios)
-                'label[for*="variant-"]',
-                'label[for*="option-"]',
-            ]
-            
-            for direct_pattern in direct_patterns:
-                try:
-                    options = page.locator(direct_pattern)
-                    option_count = await options.count()
-                    
-                    if option_count == 0 or option_count > 50:  # Skip if none or too many
-                        continue
-                    
-                    print(f"    Found {option_count} variant options: {direct_pattern}")
-                    
-                    # Try to click first available
-                    for opt_idx in range(min(option_count, 10)):
-                        try:
-                            option = options.nth(opt_idx)
-                            
-                            if not await option.is_visible(timeout=500):
-                                continue
-                            
-                            # Check if disabled
-                            classes = await option.get_attribute('class') or ''
-                            disabled_attr = await option.get_attribute('disabled')
-                            
-                            if disabled_attr is not None or 'disabled' in classes.lower():
-                                continue
-                            
-                            # Get option text
-                            option_text = "option"
-                            try:
-                                option_text = (await option.get_attribute('value') or 
-                                             await option.text_content() or 
-                                             f"#{opt_idx + 1}")[:20]
-                            except:
-                                pass
-                            
-                            print(f"    Selecting: {option_text}")
-                            await option.click(timeout=2000, force=False)
-                            await page.wait_for_timeout(800)
-                            
-                            variant_selected = True
-                            print(f"    ✓ Variant selected")
-                            break
-                            
-                        except:
-                            continue
-                    
-                    if variant_selected:
-                        break
-                        
-                except:
-                    continue
-        
-        
-        # If no variants found, that might be okay (some products don't have variants)
-        if not variant_selected:
-            print(f"  No variants detected (product may not require variant selection)")
-            
-            # In debug mode, take a screenshot to see what's on the page
-            if self.debug:
-                try:
-                    await page.screenshot(path=f"debug_no_variants_{page.url.split('/')[-1][:30]}.png")
-                    print(f"  Debug: Saved screenshot of page without variants")
-                except:
-                    pass
-        
-        return True  # Return True even if no variants (might not be required)
-    
     async def _add_product_to_cart_via_api(self, page: Page, variant_id: str, base_url: str) -> bool:
         """
         Add product to cart using Shopify's Cart API.
@@ -502,6 +190,8 @@ class ShopifyVerifier:
         """
         try:
             print(f"  Adding variant {variant_id} to cart via API...")
+            print(f"  [DEBUG] Base URL: {base_url}")
+            print(f"  [DEBUG] Current page URL: {page.url}")
             
             # Try multiple Cart API formats
             import json
@@ -509,117 +199,118 @@ class ShopifyVerifier:
             # Execute fetch in browser context (has cookies/session)
             try:
                 if self.debug:
-                    print(f"  Calling cart API with variant {variant_id}...")
+                    print(f"  [DEBUG] Preparing Cart API request...")
+                    print(f"  [DEBUG] Variant ID (type: {type(variant_id)}): {variant_id}")
                 
                 # Execute fetch directly in the page context (like browser console)
                 result = await page.evaluate("""
                     async (variantId) => {
+                        console.log('[Cart API] Starting request with variant:', variantId);
+                        
+                        const requestBody = {
+                            items: [{
+                                id: variantId,
+                                quantity: 1
+                            }]
+                        };
+                        
+                        console.log('[Cart API] Request body:', JSON.stringify(requestBody));
+                        
                         try {
                             const response = await fetch('/cart/add.js', {
                                 method: 'POST',
                                 headers: {
                                     'Content-Type': 'application/json'
                                 },
-                                body: JSON.stringify({
-                                    items: [{
-                                        id: variantId,
-                                        quantity: 1
-                                    }]
-                                })
+                                body: JSON.stringify(requestBody)
                             });
                             
+                            console.log('[Cart API] Response status:', response.status);
+                            console.log('[Cart API] Response ok:', response.ok);
+                            
                             const data = await response.json();
+                            console.log('[Cart API] Response data:', JSON.stringify(data));
                             
                             if (response.ok) {
-                                return { success: true, data: data };
+                                return { 
+                                    success: true, 
+                                    status: response.status,
+                                    data: data,
+                                    requestBody: requestBody 
+                                };
                             } else {
-                                return { success: false, status: response.status, error: data };
+                                return { 
+                                    success: false, 
+                                    status: response.status, 
+                                    error: data,
+                                    requestBody: requestBody
+                                };
                             }
                         } catch (error) {
-                            return { success: false, error: error.message };
+                            console.error('[Cart API] Exception:', error);
+                            return { 
+                                success: false, 
+                                error: error.message,
+                                errorName: error.name,
+                                requestBody: requestBody
+                            };
                         }
                     }
                 """, int(variant_id))
                 
                 if result.get('success'):
-                    print(f"  ✓ Successfully added to cart via API")
-                    return True
+                    print(f"  [DEBUG] Cart API returned success")
+                    print(f"  [DEBUG] Full API response: {json.dumps(result, indent=2)}")
+                    
+                    response_data = result.get('data', {})
+                    
+                    # Note: /cart/add.js doesn't return item_count, only items array
+                    items_array = response_data.get('items', []) if isinstance(response_data, dict) else []
+                    item_count = len(items_array)
+                    
+                    if item_count > 0:
+                        print(f"  ✓ Cart API success - added {item_count} item(s) to cart")
+                        if self.debug and isinstance(response_data, dict):
+                            print(f"  [DEBUG] Response keys: {list(response_data.keys())}")
+                            print(f"  [DEBUG] Items in response: {len(items_array)}")
+                            if items_array:
+                                first_item = items_array[0]
+                                print(f"  [DEBUG] First item: variant_id={first_item.get('variant_id')}, quantity={first_item.get('quantity')}")
+                        
+                        print(f"Product added to cart")
+                        return True
+                    else:
+                        print(f"  ✗ Cart API returned success but no items in response")
+                        print(f"  [DEBUG] Response data: {json.dumps(response_data, indent=2) if isinstance(response_data, dict) else response_data}")
+                        return False
                 else:
-                    if self.debug:
-                        error_msg = result.get('error', result.get('status', 'Unknown error'))
-                        print(f"  Cart API failed: {error_msg}")
+                    print(f"  [DEBUG] Cart API returned failure")
+                    print(f"  [DEBUG] Full error response: {json.dumps(result, indent=2)}")
+                    
+                    error_msg = result.get('error', result.get('status', 'Unknown error'))
+                    status = result.get('status', 'N/A')
+                    print(f"  ✗ Cart API failed: {error_msg} (Status: {status})")
+                    
+                    if 'requestBody' in result:
+                        print(f"  [DEBUG] Request that failed: {json.dumps(result['requestBody'])}")
+                    
+                    return False
+                    
             except Exception as e:
+                print(f"  [DEBUG] Exception in Cart API call: {type(e).__name__}")
+                print(f"  ✗ Cart API error: {str(e)[:80]}")
+                import traceback
                 if self.debug:
-                    print(f"  Cart API error: {str(e)[:80]}")
-            
-            # Cart API didn't work - fallback to product page
-            print(f"  ℹ️  Cart API not responding, will try product page method")
-            return False  # Signal that we need to try another method
+                    print(f"  [DEBUG] Traceback:\n{traceback.format_exc()}")
+                return False
                 
         except Exception as e:
+            print(f"  [DEBUG] Outer exception: {type(e).__name__}")
             print(f"  ✗ Error using Cart API: {str(e)[:80]}")
+            import traceback
+            if self.debug:
+                print(f"  [DEBUG] Traceback:\n{traceback.format_exc()}")
             return False
-    
-    async def _find_and_click_add_to_cart_legacy(self, page: Page) -> bool:
-        """
-        Find and click the 'Add to Cart' button.
-        Uses multiple strategies to handle different themes.
-        
-        Returns:
-            True if successfully added to cart
-        """
-        # First, try to select a variant if needed
-        print("  Checking for product variants (size, color, etc.)...")
-        await self._select_variant(page)
-        
-        # Wait a bit for add-to-cart button to appear/enable after variant selection
-        await page.wait_for_timeout(1000)
-        
-        # Try each add to cart pattern
-        print(f"  Looking for add to cart button...")
-        for i, pattern in enumerate(self.ADD_TO_CART_PATTERNS, 1):
-            try:
-                button = page.locator(pattern).first
-                if await button.count() > 0:
-                    # Check if button is visible
-                    if await button.is_visible(timeout=2000):
-                        # Check if it's enabled (wait up to 3 seconds for it to become enabled)
-                        try:
-                            # Wait for button to be enabled (important for stores that enable after variant selection)
-                            await page.wait_for_timeout(500)
-                            is_enabled = await button.is_enabled(timeout=2000)
-                            
-                            if is_enabled:
-                                print(f"  ✓ Found enabled add to cart button (pattern {i}/{len(self.ADD_TO_CART_PATTERNS)})")
-                                print(f"    Pattern: {pattern}")
-                                
-                                # Get button text for confirmation
-                                try:
-                                    button_text = await button.text_content()
-                                    if button_text:
-                                        print(f"    Button text: {button_text.strip()[:30]}")
-                                except:
-                                    pass
-                                
-                                await button.click(timeout=5000)
-                                await page.wait_for_timeout(2000)  # Wait for cart to update
-                                print(f"  ✓ Successfully clicked add to cart button")
-                                return True
-                            else:
-                                if i <= 3:
-                                    print(f"    Pattern {i}: Button found but disabled")
-                        except:
-                            if i <= 3:
-                                print(f"    Pattern {i}: Button not enabled")
-                            continue
-            except Exception as e:
-                # Log more details about failures
-                if i <= 3:  # Only log first few attempts to avoid spam
-                    print(f"    Pattern {i} check failed: {str(e)[:50]}")
-                continue
-        
-        print(f"  ✗ Failed to find enabled add to cart button after trying {len(self.ADD_TO_CART_PATTERNS)} patterns")
-        return False
     
     async def _navigate_to_checkout(self, page: Page) -> tuple[bool, Optional[str]]:
         """
@@ -656,7 +347,7 @@ class ShopifyVerifier:
                 return False, "Store is password protected"
             elif response and response.status == 404:
                 return False, "Checkout page returned 404"
-            elif final_url == base_url or final_url == f"{base_url}/":
+            elif final_url == base_url or final_url == f"{base_url}/" or final_url.rstrip('/') == base_url.rstrip('/'):
                 return False, "Redirected to homepage (cart empty or checkout not available)"
             else:
                 return False, f"Unexpected redirect to: {final_url}"
@@ -892,6 +583,17 @@ class ShopifyVerifier:
                 )
                 page = await context.new_page()
                 
+                # Capture browser console messages for debugging
+                if self.debug:
+                    def log_console_message(msg):
+                        # Only log Cart API related messages to reduce noise
+                        text = msg.text
+                        if '[Cart' in text or 'cart' in text.lower():
+                            msg_type = msg.type
+                            print(f"  [BROWSER CONSOLE - {msg_type.upper()}] {text}")
+                    
+                    page.on("console", log_console_message)
+                
                 # Step 0: Fetch store metadata to get base currency
                 print(f"Fetching store metadata...")
                 store_base_currency = None
@@ -1005,37 +707,13 @@ class ShopifyVerifier:
                 # Store product URL for reference
                 result.product_url = f"{base_url}/products/{product_handle}" if product_handle else base_url
                 
-                # Step 3: Add to cart - try API first, fallback to product page if needed
+                # Step 3: Add to cart via API only
                 print("Adding product to cart...")
                 added = await self._add_product_to_cart_via_api(page, variant_id, base_url)
                 
                 if not added:
-                    # Cart API failed - fallback to visiting product page and clicking button
-                    print("  Falling back to product page method...")
-                    if not product_handle:
-                        result.error_message = "Could not add product to cart (API failed, no product handle)"
-                        return result
-                    
-                    product_url_full = f"{base_url}/products/{product_handle}?variant={variant_id}"
-                    print(f"  Visiting product page: {product_url_full}")
-                    
-                    try:
-                        await page.goto(product_url_full, wait_until="domcontentloaded", timeout=self.timeout)
-                        await page.wait_for_timeout(2000)
-                        
-                        # Close popups with Escape
-                        await page.keyboard.press('Escape')
-                        await page.wait_for_timeout(500)
-                        
-                        # Try to click add to cart button
-                        added = await self._find_and_click_add_to_cart_legacy(page)
-                        
-                        if not added:
-                            result.error_message = "Could not add product to cart (both API and button click failed)"
-                            return result
-                    except Exception as e:
-                        result.error_message = f"Could not add product to cart: {str(e)[:100]}"
-                        return result
+                    result.error_message = "Could not add product to cart via API"
+                    return result
                 
                 print("Product added to cart")
                 
