@@ -75,13 +75,13 @@ async def main():
     # EDIT THIS LINE TO TEST DIFFERENT STORES
     # ============================================
     
-    test_store = "https://itsbronze.com"  # Test post-purchase detection
+    test_store = "https://geteuvella.com"  # Test cart verification
     
     # Set to True to hide browser, False to watch it work
     show_browser = False  # Headless for speed
     
     # Enable extra logging and screenshots for debugging
-    debug_mode = True
+    debug_mode = True  # Shows detailed product availability checking
     
     # ============================================
     

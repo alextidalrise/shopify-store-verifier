@@ -651,11 +651,13 @@ class ShopifyVerifier:
             
             # Check for common redirect issues
             if 'cart' in final_url:
-                return False, "Redirected to cart (no items in cart?)"
+                return False, "Redirected to cart (cart may be empty or checkout disabled)"
             elif 'password' in final_url:
                 return False, "Store is password protected"
             elif response and response.status == 404:
                 return False, "Checkout page returned 404"
+            elif final_url == base_url or final_url == f"{base_url}/":
+                return False, "Redirected to homepage (cart empty or checkout not available)"
             else:
                 return False, f"Unexpected redirect to: {final_url}"
                 
@@ -752,7 +754,7 @@ class ShopifyVerifier:
         
         return None
     
-    async def _test_currency_switch(self, page: Page) -> dict:
+    async def _test_currency_switch(self, page: Page, store_base_currency: str = None) -> dict:
         """
         Test if switching countries in checkout changes the currency.
         
@@ -799,49 +801,67 @@ class ShopifyVerifier:
             print(f"  Initial: {initial_country} → {initial_currency}")
             result['country_currency_pairs'][initial_country] = initial_currency
             
-            # Find a country with a different expected currency
-            target_country = None
-            expected_new_currency = None
-            initial_expected_currency = self._get_expected_currency(initial_country)
+            # Find countries to test - prioritize store's base currency for post-purchase detection
+            countries_to_test = []
             
+            # First, try to find a country matching the store's base currency
+            if store_base_currency and store_base_currency != initial_currency:
+                print(f"  Store base currency is {store_base_currency}, looking for matching country...")
+                for country in countries:
+                    if country != initial_country:
+                        expected_currency = self._get_expected_currency(country)
+                        if expected_currency == store_base_currency:
+                            countries_to_test.append(country)
+                            print(f"  Will test {country} (matches store base currency: {store_base_currency})")
+                            break
+            
+            # If no base currency match or no base currency info, try US (most common)
+            if not countries_to_test and 'US' in countries and initial_country != 'US':
+                countries_to_test.append('US')
+            
+            # Then find a country with different currency for proper currency testing
+            initial_expected_currency = self._get_expected_currency(initial_country)
             for country in countries:
-                if country != initial_country:
+                if country not in countries_to_test and country != initial_country:
                     expected_currency = self._get_expected_currency(country)
                     if expected_currency and expected_currency != initial_expected_currency:
-                        target_country = country
-                        expected_new_currency = expected_currency
-                        print(f"  Will test switching to: {country} (expect {expected_currency})")
-                        break
+                        countries_to_test.append(country)
+                        break  # Just need one different currency
             
-            if not target_country:
+            if not countries_to_test:
                 print("  All countries use same currency - no switch test needed")
                 return result
             
-            # Perform the switch
             country_select = page.locator('select[name="countryCode"]').first
-            await country_select.select_option(target_country)
-            result['switched_country'] = target_country
-            result['tested'] = True
             
-            # Wait for currency to update (2-3 seconds as per user)
-            print("  Waiting for currency to update...")
-            await page.wait_for_timeout(3000)
-            
-            # Check new currency
-            new_currency = await self._get_checkout_currency(page)
-            result['switched_currency'] = new_currency
-            result['country_currency_pairs'][target_country] = new_currency
-            
-            if new_currency:
-                print(f"  After switch: {target_country} → {new_currency}")
+            # Test each country (this triggers post-purchase as we change selector)
+            for i, test_country in enumerate(countries_to_test):
+                expected_currency = self._get_expected_currency(test_country)
+                print(f"  Testing country {i+1}/{len(countries_to_test)}: {test_country} (expect {expected_currency})")
                 
-                if new_currency != initial_currency:
-                    result['currency_changed'] = True
-                    print(f"  ✅ Currency switched from {initial_currency} to {new_currency}")
-                else:
-                    print(f"  ❌ Currency stayed as {initial_currency} (expected {expected_new_currency})")
+                await country_select.select_option(test_country)
+                result['tested'] = True
+                
+                # Wait for currency to update and post-purchase to potentially fire
+                await page.wait_for_timeout(3000)
+                
+                # Check currency
+                new_currency = await self._get_checkout_currency(page)
+                if new_currency:
+                    result['country_currency_pairs'][test_country] = new_currency
+                    print(f"    → {new_currency}")
+                    
+                    if new_currency != initial_currency:
+                        result['currency_changed'] = True
+                        result['switched_country'] = test_country
+                        result['switched_currency'] = new_currency
+            
+            # Report results
+            unique_currencies = set(result['country_currency_pairs'].values())
+            if len(unique_currencies) > 1:
+                print(f"  ✅ Detected multiple currencies: {unique_currencies}")
             else:
-                print("  Could not detect currency after switch")
+                print(f"  ℹ️  All tested countries use {initial_currency}")
             
             return result
             
@@ -872,10 +892,25 @@ class ShopifyVerifier:
                 )
                 page = await context.new_page()
                 
+                # Step 0: Fetch store metadata to get base currency
+                print(f"Fetching store metadata...")
+                store_base_currency = None
+                store_base_country = None
+                try:
+                    meta_response = await page.request.get(f"{base_url}/meta.json")
+                    if meta_response.ok:
+                        meta_data = await meta_response.json()
+                        store_base_currency = meta_data.get('currency')
+                        store_base_country = meta_data.get('country')
+                        if store_base_currency:
+                            print(f"  Store base currency: {store_base_currency} (country: {store_base_country})")
+                except:
+                    pass  # Not critical, we can work without it
+                
                 # Step 1: Navigate directly to products.json to get product data AND establish session
                 print(f"Loading {base_url}/products.json...")
                 try:
-                    await page.goto(f"{base_url}/products.json?limit=10", wait_until="domcontentloaded", timeout=self.timeout)
+                    await page.goto(f"{base_url}/products.json?limit=50", wait_until="domcontentloaded", timeout=self.timeout)
                     await page.wait_for_timeout(1000)
                 except Exception as e:
                     error_str = str(e)
@@ -930,20 +965,28 @@ class ShopifyVerifier:
                     
                     for product in products:
                         product_handle = product.get('handle')
+                        product_title = product.get('title', 'Unknown')
                         variants = product.get('variants', [])
+                        
+                        if self.debug:
+                            print(f"    Checking: {product_title} ({len(variants)} variants)")
                         
                         for variant in variants:
                             vid = variant.get('id')
                             available = variant.get('available', False)
                             
+                            if self.debug:
+                                variant_title = variant.get('title', 'Default')
+                                print(f"      - {variant_title}: available={available}")
+                            
                             if available and vid:
                                 variant_id = str(vid)
-                                product_title = product.get('title', 'Unknown')
                                 variant_title = variant.get('title', '')
                                 print(f"  ✓ Found available variant:")
                                 print(f"    Product: {product_title}")
                                 print(f"    Variant: {variant_title}")
                                 print(f"    ID: {variant_id}")
+                                print(f"    Handle: {product_handle}")
                                 break
                         
                         if variant_id:
@@ -1029,11 +1072,12 @@ class ShopifyVerifier:
                 
                 result.reached_checkout = True
                 print("Reached checkout page")
-                await page.wait_for_timeout(5000)  # Let checkout load and fire network requests
+                await page.wait_for_timeout(3000)  # Initial page load
                 
                 # Step 6: Test currency switching in checkout
+                # NOTE: Country selector changes often trigger post-purchase network requests!
                 print("Testing currency verification...")
-                currency_test = await self._test_currency_switch(page)
+                currency_test = await self._test_currency_switch(page, store_base_currency=store_base_currency)
                 
                 result.available_countries = currency_test['available_countries']
                 result.country_currency_pairs = currency_test['country_currency_pairs']
@@ -1052,9 +1096,10 @@ class ShopifyVerifier:
                 else:
                     print(f"  ℹ️  Single market store")
                 
-                # Wait a bit more for any post-purchase requests triggered by page changes
+                # IMPORTANT: Wait longer for post-purchase requests triggered by country selector change
+                # Some stores don't fire post-purchase until country is changed!
                 print("Waiting for post-purchase network activity...")
-                await page.wait_for_timeout(3000)  # Additional wait to catch late-firing requests
+                await page.wait_for_timeout(5000)  # Extended wait to catch delayed post-purchase triggers
                 
                 # Step 7: Analyze post-purchase network requests
                 print("Analyzing post-purchase upsells...")
