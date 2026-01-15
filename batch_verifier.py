@@ -279,7 +279,7 @@ class BatchVerifier:
         print(f"Success rate: {summary['success_rate']}")
         print(f"\nCurrency Support:")
         print(f"  - Stores with multiple currencies: {summary['multiple_currencies_count']} ({summary['multiple_currencies_percentage']})")
-        print(f"  - Stores with currency selector: {summary['currency_selector_count']}")
+        print(f"  - Stores with currency switch tested: {summary['currency_switch_tested_count']}")
         print(f"\nPost-Purchase Upsells:")
         print(f"  - Stores with upsells detected: {summary['post_purchase_upsell_count']} ({summary['post_purchase_upsell_percentage']})")
         print(f"\nCheckout Reached: {summary['reached_checkout_count']} ({summary['reached_checkout_percentage']})")

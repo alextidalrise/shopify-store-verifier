@@ -75,10 +75,10 @@ async def main():
     # EDIT THIS LINE TO TEST DIFFERENT STORES
     # ============================================
     
-    test_store = "http://nativepet.com"
+    test_store = "https://prosupps.com"  # One of the failed stores
     
     # Set to True to hide browser, False to watch it work
-    show_browser = False  # Headless mode for speed!
+    show_browser = True  # Show browser to see what's happening
     
     # Enable extra logging and screenshots for debugging
     debug_mode = True

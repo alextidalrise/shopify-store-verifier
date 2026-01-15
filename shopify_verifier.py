@@ -621,38 +621,52 @@ class ShopifyVerifier:
         print(f"  ✗ Failed to find enabled add to cart button after trying {len(self.ADD_TO_CART_PATTERNS)} patterns")
         return False
     
-    async def _navigate_to_checkout(self, page: Page) -> bool:
+    async def _navigate_to_checkout(self, page: Page) -> tuple[bool, Optional[str]]:
         """
-        Navigate from cart to checkout.
+        Navigate to checkout page.
         
         Returns:
-            True if successfully reached checkout
+            Tuple of (success, error_message)
         """
-        # Try clicking checkout button
-        for pattern in self.CHECKOUT_BUTTON_PATTERNS:
-            try:
-                button = page.locator(pattern).first
-                if await button.count() > 0 and await button.is_visible(timeout=2000):
-                    await button.click(timeout=5000)
-                    await page.wait_for_timeout(3000)
-                    
-                    # Check if we're on checkout
-                    url = page.url
-                    if '/checkout' in url or 'checkout.shopify.com' in url:
-                        return True
-            except:
-                continue
-        
-        # Direct navigation fallback
+        # Since we use Cart API, we should directly navigate to checkout
         try:
-            base_url = self._normalize_url(page.url)
-            await page.goto(f"{base_url}/checkout", timeout=self.timeout)
+            # Get the base URL from current page
+            current_url = page.url
+            if '/products.json' in current_url:
+                base_url = current_url.split('/products.json')[0]
+            else:
+                base_url = self._normalize_url(current_url)
+            
+            print(f"Navigating to checkout: {base_url}/checkout")
+            
+            # Direct navigation to checkout
+            response = await page.goto(f"{base_url}/checkout", wait_until="domcontentloaded", timeout=self.timeout)
             await page.wait_for_timeout(2000)
-            return True
-        except:
-            pass
-        
-        return False
+            
+            # Check if we reached checkout
+            final_url = page.url
+            if '/checkout' in final_url or 'checkout.shopify.com' in final_url:
+                print(f"  ✓ Reached checkout")
+                return True, None
+            
+            # Check for common redirect issues
+            if 'cart' in final_url:
+                return False, "Redirected to cart (no items in cart?)"
+            elif 'password' in final_url:
+                return False, "Store is password protected"
+            elif response and response.status == 404:
+                return False, "Checkout page returned 404"
+            else:
+                return False, f"Unexpected redirect to: {final_url}"
+                
+        except Exception as e:
+            error_msg = str(e)
+            if 'timeout' in error_msg.lower():
+                return False, "Timeout navigating to checkout"
+            elif 'net::' in error_msg:
+                return False, f"Network error: {error_msg[:100]}"
+            else:
+                return False, f"Checkout navigation error: {error_msg[:100]}"
     
     async def _get_checkout_currency(self, page: Page) -> Optional[str]:
         """
@@ -984,10 +998,10 @@ class ShopifyVerifier:
                 
                 # Navigate to checkout
                 print("Navigating to checkout...")
-                checkout_reached = await self._navigate_to_checkout(page)
+                checkout_reached, checkout_error = await self._navigate_to_checkout(page)
                 
                 if not checkout_reached:
-                    result.error_message = "Could not reach checkout page"
+                    result.error_message = f"Could not reach checkout: {checkout_error}"
                     return result
                 
                 result.reached_checkout = True
