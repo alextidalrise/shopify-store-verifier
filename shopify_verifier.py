@@ -441,6 +441,7 @@ class ShopifyVerifier:
         """
         Select a product variant (size, color, etc.) if required.
         Handles both dropdown selectors and button/swatch selectors.
+        Uses a generic approach that works for any variant type.
         
         Returns:
             True if a variant was selected (or not needed), False if failed
@@ -466,74 +467,166 @@ class ShopifyVerifier:
         except:
             pass
         
-        # Strategy 2: Button/swatch selectors (modern themes like Allbirds)
-        button_patterns = [
-            # Size/variant buttons with various attributes
-            'button[data-variant]',
-            'button[data-option-value]',
-            'input[type="radio"][name*="option"]',
-            'input[type="radio"][name*="Size"]',
-            'input[type="radio"][name*="Color"]',
-            # Common class patterns
-            '[class*="variant-button"]',
-            '[class*="size-button"]',
-            '[class*="swatch"]',
-            '[class*="ProductOption"]',
-            # Fieldset-based variants (common pattern)
-            'fieldset input[type="radio"]',
-            'fieldset button',
-            # Label-based radio buttons
-            'label[for*="option"]',
-            'label[for*="variant"]',
+        # Strategy 1.5: Look for and handle variant group tabs (like MEN'S/WOMEN'S SIZES)
+        # These are often containers that need to be activated before selecting the actual variant
+        tab_container_patterns = [
+            'fieldset legend',  # Common pattern: <fieldset><legend>Size</legend><buttons...>
+            '[role="radiogroup"]',
+            'div[class*="variant"] > div[class*="tab"]',
+            'div[class*="option"] > button[role="tab"]',
         ]
         
-        for pattern in button_patterns:
+        # Check if there are tab-like containers and ensure one is active
+        for container_pattern in tab_container_patterns:
             try:
-                elements = page.locator(pattern)
-                count = await elements.count()
-                
+                containers = page.locator(container_pattern)
+                count = await containers.count()
                 if count > 0:
-                    print(f"  Found {count} button/swatch variant(s) with pattern: {pattern}")
-                    
-                    # Try to find first available (not sold out) option
-                    for i in range(min(count, 10)):  # Check first 10 options
+                    # Click the first tab/group to ensure it's active
+                    first_tab = containers.first
+                    if await first_tab.is_visible(timeout=1000):
                         try:
-                            element = elements.nth(i)
-                            
-                            # Check if it's visible and not disabled
-                            if await element.is_visible(timeout=1000):
-                                # Check for "sold out" or "disabled" indicators
-                                classes = await element.get_attribute('class') or ''
-                                aria_disabled = await element.get_attribute('aria-disabled') or ''
-                                disabled = await element.get_attribute('disabled')
-                                
-                                if ('sold-out' in classes.lower() or 
-                                    'disabled' in classes.lower() or
-                                    aria_disabled == 'true' or
-                                    disabled is not None):
-                                    continue
-                                
-                                # Try to get the variant name for logging
-                                try:
-                                    variant_name = await element.get_attribute('value') or await element.text_content() or f"#{i+1}"
-                                    print(f"    Selecting variant: {variant_name[:20]}")
-                                except:
-                                    print(f"    Selecting variant option #{i+1}")
-                                
-                                # Click or check the element
-                                await element.click(timeout=2000, force=False)
-                                await page.wait_for_timeout(800)  # Wait for any JS to update
-                                variant_selected = True
-                                print(f"    ✓ Variant selected successfully")
-                                return True
-                                
-                        except Exception as e:
-                            continue
-                    
-                    # If we found elements but couldn't select any
-                    if not variant_selected:
-                        print(f"    Warning: Found variants but none were selectable")
+                            await first_tab.click(timeout=2000)
+                            await page.wait_for_timeout(500)
+                            print(f"    Clicked variant group/tab to activate options")
+                        except:
+                            pass  # May already be active
+                    break
+            except:
+                continue
+        
+        # Strategy 2: Generic container-based variant selection
+        # Find variant containers, then select first available option within them
+        # This works for ANY variant type (size, color, material, etc.)
+        
+        container_patterns = [
+            # Fieldset is the most semantic container for form options
+            'fieldset',
+            # Radio groups
+            '[role="radiogroup"]',
+            # Common Shopify variant containers
+            'div[class*="variant"]',
+            'div[class*="option"]',
+            'div[class*="product-form__input"]',
+            # Product option containers
+            'div[data-product-option]',
+            'div[class*="ProductOption"]',
+        ]
+        
+        for container_pattern in container_patterns:
+            try:
+                containers = page.locator(container_pattern)
+                container_count = await containers.count()
+                
+                if container_count == 0:
+                    continue
+                
+                print(f"  Found {container_count} variant container(s): {container_pattern}")
+                
+                # Process each container (e.g., one for Size, one for Color)
+                for container_idx in range(min(container_count, 5)):  # Max 5 variant types
+                    try:
+                        container = containers.nth(container_idx)
                         
+                        # Skip if not visible
+                        if not await container.is_visible(timeout=1000):
+                            continue
+                        
+                        # Get container label/name for logging
+                        container_name = "unknown"
+                        try:
+                            # Try to find a label or legend
+                            label_elem = await container.locator('legend, label, [class*="label"]').first.text_content()
+                            if label_elem:
+                                container_name = label_elem.strip()[:30]
+                        except:
+                            pass
+                        
+                        print(f"    Variant group: {container_name}")
+                        
+                        # Within this container, find clickable variant options
+                        # Look for various types of selectable elements
+                        option_selectors = [
+                            'input[type="radio"]',  # Radio buttons
+                            'button:not([disabled])',  # Enabled buttons
+                            'label[for]',  # Labels (often wrap hidden radios)
+                            '[role="radio"]',  # ARIA radio role
+                            'a[class*="swatch"]',  # Swatch links
+                        ]
+                        
+                        for option_selector in option_selectors:
+                            options = container.locator(option_selector)
+                            option_count = await options.count()
+                            
+                            if option_count == 0:
+                                continue
+                            
+                            print(f"      Found {option_count} options ({option_selector})")
+                            
+                            # Try to select first available option
+                            for opt_idx in range(min(option_count, 15)):  # Try up to 15 options
+                                try:
+                                    option = options.nth(opt_idx)
+                                    
+                                    # Check if visible
+                                    if not await option.is_visible(timeout=500):
+                                        continue
+                                    
+                                    # Check if disabled/sold-out
+                                    classes = await option.get_attribute('class') or ''
+                                    aria_disabled = await option.get_attribute('aria-disabled') or ''
+                                    disabled_attr = await option.get_attribute('disabled')
+                                    aria_checked = await option.get_attribute('aria-checked') or ''
+                                    
+                                    # Skip if disabled or sold out
+                                    if (disabled_attr is not None or
+                                        aria_disabled == 'true' or
+                                        'sold-out' in classes.lower() or
+                                        'unavailable' in classes.lower() or
+                                        'disabled' in classes.lower()):
+                                        continue
+                                    
+                                    # Skip if already selected/checked
+                                    if aria_checked == 'true':
+                                        print(f"      Option {opt_idx + 1} already selected")
+                                        variant_selected = True
+                                        break
+                                    
+                                    # Try to get option value/text for logging
+                                    option_text = "option"
+                                    try:
+                                        option_text = (await option.get_attribute('value') or 
+                                                     await option.get_attribute('aria-label') or
+                                                     await option.text_content() or
+                                                     f"#{opt_idx + 1}")
+                                        option_text = option_text.strip()[:20]
+                                    except:
+                                        pass
+                                    
+                                    print(f"      Selecting: {option_text}")
+                                    
+                                    # Click the option
+                                    await option.click(timeout=2000, force=False)
+                                    await page.wait_for_timeout(800)  # Wait for JS updates
+                                    
+                                    variant_selected = True
+                                    print(f"      ✓ Variant selected")
+                                    break  # Move to next container
+                                    
+                                except Exception as e:
+                                    continue
+                            
+                            # If we selected something in this container, move to next container
+                            if variant_selected:
+                                break
+                        
+                    except Exception as e:
+                        continue
+                
+                # If we found and processed containers, stop looking
+                if variant_selected or container_count > 0:
+                    break
+                    
             except:
                 continue
         
@@ -838,6 +931,15 @@ class ShopifyVerifier:
                 
                 # Close any pop-ups on product page
                 print("Checking for pop-ups on product page...")
+                
+                # Try Escape key first (works for many modal-style popups including geolocation)
+                try:
+                    await page.keyboard.press('Escape')
+                    await page.wait_for_timeout(500)
+                    print("  Pressed Escape key to dismiss any modal popups")
+                except:
+                    pass
+                
                 await self._close_popups(page)
                 
                 # Step 4: Add to cart
