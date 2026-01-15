@@ -75,7 +75,7 @@ async def main():
     # EDIT THIS LINE TO TEST DIFFERENT STORES
     # ============================================
     
-    test_store = "https://www.allbirds.com"
+    test_store = "https://www.nocoldfeet.co/"
     
     # Set to True to hide browser, False to watch it work
     show_browser = True
