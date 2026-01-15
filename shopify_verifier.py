@@ -817,7 +817,129 @@ class ShopifyVerifier:
         
         return True  # Return True even if no variants (might not be required)
     
-    async def _find_and_click_add_to_cart(self, page: Page) -> bool:
+    async def _find_available_variant(self, page: Page, base_url: str) -> tuple[Optional[str], Optional[str]]:
+        """
+        Find an available product variant using products.json API.
+        Much faster and more reliable than browser navigation.
+        
+        Returns:
+            Tuple of (variant_id, product_handle) or (None, None)
+        """
+        try:
+            print("  Fetching products.json...")
+            response = await page.request.get(f"{base_url}/products.json?limit=10")
+            
+            if not response.ok:
+                print(f"  ✗ products.json failed with status {response.status}")
+                return None, None
+            
+            data = await response.json()
+            products = data.get('products', [])
+            
+            if not products:
+                print("  ✗ No products found in products.json")
+                return None, None
+            
+            print(f"  Found {len(products)} products, searching for available variant...")
+            
+            # Look through products to find an available variant
+            for product in products:
+                product_handle = product.get('handle')
+                variants = product.get('variants', [])
+                
+                for variant in variants:
+                    variant_id = variant.get('id')
+                    available = variant.get('available', False)
+                    
+                    if available and variant_id:
+                        product_title = product.get('title', 'Unknown')
+                        variant_title = variant.get('title', '')
+                        print(f"  ✓ Found available variant:")
+                        print(f"    Product: {product_title}")
+                        print(f"    Variant: {variant_title}")
+                        print(f"    ID: {variant_id}")
+                        return str(variant_id), product_handle
+            
+            print("  ✗ No available variants found in any product")
+            return None, None
+            
+        except Exception as e:
+            print(f"  Error fetching products.json: {str(e)[:80]}")
+            return None, None
+    
+    async def _add_product_to_cart_via_api(self, page: Page, variant_id: str, base_url: str) -> bool:
+        """
+        Add product to cart using Shopify's Cart API.
+        
+        Args:
+            page: Playwright page object
+            variant_id: The variant ID to add to cart
+            base_url: Store base URL
+        
+        Returns:
+            True if successfully added to cart
+        """
+        try:
+            print(f"  Adding variant {variant_id} to cart via API...")
+            
+            # Try multiple Cart API formats
+            import json
+            
+            # Execute fetch in browser context (has cookies/session)
+            try:
+                if self.debug:
+                    print(f"  Calling cart API with variant {variant_id}...")
+                
+                # Execute fetch directly in the page context (like browser console)
+                result = await page.evaluate("""
+                    async (variantId) => {
+                        try {
+                            const response = await fetch('/cart/add.js', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                    items: [{
+                                        id: variantId,
+                                        quantity: 1
+                                    }]
+                                })
+                            });
+                            
+                            const data = await response.json();
+                            
+                            if (response.ok) {
+                                return { success: true, data: data };
+                            } else {
+                                return { success: false, status: response.status, error: data };
+                            }
+                        } catch (error) {
+                            return { success: false, error: error.message };
+                        }
+                    }
+                """, int(variant_id))
+                
+                if result.get('success'):
+                    print(f"  ✓ Successfully added to cart via API")
+                    return True
+                else:
+                    if self.debug:
+                        error_msg = result.get('error', result.get('status', 'Unknown error'))
+                        print(f"  Cart API failed: {error_msg}")
+            except Exception as e:
+                if self.debug:
+                    print(f"  Cart API error: {str(e)[:80]}")
+            
+            # Cart API didn't work - fallback to product page
+            print(f"  ℹ️  Cart API not responding, will try product page method")
+            return False  # Signal that we need to try another method
+                
+        except Exception as e:
+            print(f"  ✗ Error using Cart API: {str(e)[:80]}")
+            return False
+    
+    async def _find_and_click_add_to_cart_legacy(self, page: Page) -> bool:
         """
         Find and click the 'Add to Cart' button.
         Uses multiple strategies to handle different themes.
@@ -1349,72 +1471,106 @@ class ShopifyVerifier:
                 )
                 page = await context.new_page()
                 
-                # Step 1: Visit homepage and check for currency selector
-                print(f"Visiting {base_url}...")
-                await page.goto(base_url, wait_until="domcontentloaded", timeout=self.timeout)
-                await page.wait_for_timeout(3000)  # Let page fully load
+                # Step 1: Navigate directly to products.json to get product data AND establish session
+                print(f"Loading {base_url}/products.json...")
+                await page.goto(f"{base_url}/products.json?limit=10", wait_until="domcontentloaded", timeout=self.timeout)
+                await page.wait_for_timeout(1000)
                 
-                # Close any pop-ups on homepage (newsletters, cookies, etc.)
-                print("Checking for pop-ups on homepage...")
-                await self._close_popups(page)
-                
-                # Handle geolocation/country selector pop-ups
-                geo_action = await self._handle_geolocation_popup(page, debug=self.debug)
-                if geo_action:
-                    print(f"  Geolocation action: {geo_action}")
-                
-                # Take a screenshot if in debug mode
-                if self.debug:
-                    try:
-                        await page.screenshot(path=f"debug_homepage_{base_url.replace('https://', '').replace('/', '_')}.png")
-                        print(f"  Debug: Screenshot saved")
-                    except:
-                        pass
-                
-                # Step 2: Find a product
-                print("Finding a product...")
-                product_url = await self._find_product_page(page, base_url)
-                
-                if not product_url:
-                    result.error_message = "Could not find any product page"
-                    return result
-                
-                result.product_url = product_url
-                print(f"Found product: {product_url}")
-                
-                # Step 3: Go to product page
-                await page.goto(product_url, wait_until="domcontentloaded", timeout=self.timeout)
-                await page.wait_for_timeout(2000)
-                
-                # Close any pop-ups on product page
-                print("Checking for pop-ups on product page...")
-                
-                # Try Escape key first (works for many modal-style popups including geolocation)
+                # Step 2: Parse products.json from the page to find available variant
+                print("Finding an available product...")
                 try:
-                    await page.keyboard.press('Escape')
-                    await page.wait_for_timeout(500)
-                    print("  Pressed Escape key to dismiss any modal popups")
-                except:
-                    pass
-                
-                await self._close_popups(page)
-                
-                # Step 4: Add to cart
-                print("Adding product to cart...")
-                added = await self._find_and_click_add_to_cart(page)
-                
-                # If add to cart failed, try closing pop-ups and retry once
-                if not added:
-                    print("Add to cart failed, checking for blocking pop-ups...")
-                    closed = await self._close_popups(page, max_attempts=2)
-                    if closed > 0:
-                        print("Retrying add to cart after closing pop-ups...")
-                        await page.wait_for_timeout(1000)
-                        added = await self._find_and_click_add_to_cart(page)
-                
-                if not added:
-                    result.error_message = "Could not add product to cart"
+                    products_data = await page.evaluate("""() => {
+                        try {
+                            // The page should contain the JSON data
+                            const preTag = document.querySelector('pre');
+                            if (preTag) {
+                                return JSON.parse(preTag.textContent);
+                            }
+                            // Fallback: try to get from body
+                            return JSON.parse(document.body.textContent);
+                        } catch (e) {
+                            return null;
+                        }
+                    }""")
+                    
+                    if not products_data or 'products' not in products_data:
+                        print("  ✗ Could not parse products.json")
+                        result.error_message = "Could not parse products.json"
+                        return result
+                    
+                    products = products_data.get('products', [])
+                    print(f"  Found {len(products)} products, searching for available variant...")
+                    
+                    # Find first available variant
+                    variant_id = None
+                    product_handle = None
+                    
+                    for product in products:
+                        product_handle = product.get('handle')
+                        variants = product.get('variants', [])
+                        
+                        for variant in variants:
+                            vid = variant.get('id')
+                            available = variant.get('available', False)
+                            
+                            if available and vid:
+                                variant_id = str(vid)
+                                product_title = product.get('title', 'Unknown')
+                                variant_title = variant.get('title', '')
+                                print(f"  ✓ Found available variant:")
+                                print(f"    Product: {product_title}")
+                                print(f"    Variant: {variant_title}")
+                                print(f"    ID: {variant_id}")
+                                break
+                        
+                        if variant_id:
+                            break
+                    
+                    if not variant_id:
+                        print("  ✗ No available variants found")
+                        result.error_message = "No available variants found"
+                        return result
+                        
+                except Exception as e:
+                    print(f"  ✗ Error parsing products.json: {str(e)[:80]}")
+                    result.error_message = f"Error parsing products.json: {str(e)[:80]}"
                     return result
+                
+                # Store product URL for reference
+                result.product_url = f"{base_url}/products/{product_handle}" if product_handle else base_url
+                
+                # Step 3: Add to cart - try API first, fallback to product page if needed
+                print("Adding product to cart...")
+                added = await self._add_product_to_cart_via_api(page, variant_id, base_url)
+                
+                if not added:
+                    # Cart API failed - fallback to visiting product page and clicking button
+                    print("  Falling back to product page method...")
+                    if not product_handle:
+                        result.error_message = "Could not add product to cart (API failed, no product handle)"
+                        return result
+                    
+                    product_url_full = f"{base_url}/products/{product_handle}?variant={variant_id}"
+                    print(f"  Visiting product page: {product_url_full}")
+                    
+                    try:
+                        await page.goto(product_url_full, wait_until="domcontentloaded", timeout=self.timeout)
+                        await page.wait_for_timeout(2000)
+                        
+                        # Close popups
+                        await page.keyboard.press('Escape')
+                        await page.wait_for_timeout(500)
+                        await self._close_popups(page)
+                        
+                        # Try to click add to cart button
+                        added = await self._find_and_click_add_to_cart_legacy(page)
+                        
+                        if not added:
+                            result.error_message = "Could not add product to cart (both API and button click failed)"
+                            return result
+                    except Exception as e:
+                        result.error_message = f"Could not add product to cart: {str(e)[:100]}"
+                        return result
                 
                 print("Product added to cart")
                 
@@ -1424,7 +1580,14 @@ class ShopifyVerifier:
                 
                 def handle_request(request):
                     url = request.url
-                    # Check for post-purchase patterns
+                    
+                    # Skip post-purchase SURVEYS (TripleWhale, etc.) - we only want UPSELLS
+                    if 'survey' in url.lower() or 'feedback' in url.lower():
+                        if self.debug:
+                            print(f"  ⊘ Skipping survey request: {url[:80]}...")
+                        return
+                    
+                    # Check for post-purchase UPSELL patterns
                     if 'post-purchase' in url.lower() or 'post_purchase' in url.lower() or 'ppShouldTrigger' in url:
                         detected_requests.append(url)
                         if self.debug:
@@ -1474,10 +1637,19 @@ class ShopifyVerifier:
                 # Extract app name from detected requests
                 detected_app = None
                 if detected_requests:
-                    for url in detected_requests:
+                    # Filter out survey-related apps
+                    upsell_requests = [url for url in detected_requests 
+                                     if 'survey' not in url.lower() and 'feedback' not in url.lower()]
+                    
+                    for url in upsell_requests:
+                        # Skip TripleWhale survey URLs specifically
+                        if 'triplewhale' in url.lower() and 'survey' in url.lower():
+                            continue
+                        
                         # Try multiple patterns to extract app name
                         patterns = [
                             r'/([a-z]+(?:-[a-z]+)?)-\d+/',  # aftersell-549
+                            r'//start\.([a-z]+)\.(?:app|io|com)/',  # start.aftersell.app
                             r'//([a-z]+)\.(?:app|io|com)/',  # aftersell.app
                             r'/post-purchase/[^/]+/([a-z]+)',  # /post-purchase/handle/aftersell
                         ]
@@ -1486,6 +1658,12 @@ class ShopifyVerifier:
                             match = re.search(pattern, url.lower())
                             if match:
                                 app_raw = match.group(1)
+                                
+                                # Skip non-upsell apps
+                                skip_apps = ['triplewhale', 'klaviyo', 'yotpo']
+                                if app_raw in skip_apps:
+                                    continue
+                                
                                 app_name_map = {
                                     'aftersell': 'AfterSell',
                                     'reconvert': 'ReConvert',
