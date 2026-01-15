@@ -64,6 +64,56 @@ class VerificationResult:
 class ShopifyVerifier:
     """Verifies Shopify stores for currency support and post-purchase upsells."""
     
+    # Pop-up close button patterns (various types of pop-ups)
+    POPUP_CLOSE_PATTERNS = [
+        # Generic close buttons
+        'button[aria-label*="close" i]',
+        'button[title*="close" i]',
+        '[class*="close"]',
+        '[id*="close"]',
+        '[data-dismiss]',
+        '[aria-label*="dismiss" i]',
+        # X buttons
+        'button:has-text("×")',
+        'button:has-text("✕")',
+        '[class*="modal"] button:has-text("×")',
+        # No thanks / decline buttons (for newsletters, etc.)
+        'button:has-text("No thanks")',
+        'button:has-text("No, thanks")',
+        'button:has-text("Maybe later")',
+        'button:has-text("Not now")',
+        'button:has-text("Skip")',
+        'button:has-text("Continue to site")',
+        'a:has-text("Continue to site")',
+        # Cookie consent
+        'button:has-text("Accept")',
+        'button:has-text("I agree")',
+        'button:has-text("Got it")',
+        'button:has-text("OK")',
+        '[id*="cookie"] button',
+        '[class*="cookie"] button',
+        # Age verification
+        'button:has-text("Yes")',
+        'button:has-text("Enter")',
+        'button:has-text("I am")',
+    ]
+    
+    # Pop-up modal/overlay patterns
+    POPUP_OVERLAY_PATTERNS = [
+        '[class*="modal"]',
+        '[class*="popup"]',
+        '[class*="overlay"]',
+        '[role="dialog"]',
+        '[class*="newsletter"]',
+        '[id*="popup"]',
+        '[id*="modal"]',
+        '[data-modal]',
+        # Geolocation/country selector pop-ups
+        '[class*="geolocation-popup"]',
+        '[class*="country-popup"]',
+        '[class*="locale-popup"]',
+    ]
+    
     # Common selectors for currency switchers (various themes)
     CURRENCY_SELECTOR_PATTERNS = [
         # Generic patterns
@@ -125,6 +175,139 @@ class ShopifyVerifier:
             url = 'https://' + url
         parsed = urlparse(url)
         return f"{parsed.scheme}://{parsed.netloc}"
+    
+    async def _close_popups(self, page: Page, max_attempts: int = 3) -> int:
+        """
+        Detect and close pop-ups on the page.
+        
+        This method tries multiple strategies:
+        1. Look for close buttons (X, "No thanks", etc.)
+        2. Press Escape key
+        3. Click outside modals if they have backdrop-dismiss
+        
+        Args:
+            page: Playwright page object
+            max_attempts: Maximum number of pop-ups to try closing
+            
+        Returns:
+            Number of pop-ups closed
+        """
+        closed_count = 0
+        
+        for attempt in range(max_attempts):
+            await page.wait_for_timeout(1000)  # Let any pop-ups render
+            
+            # Strategy 1: Try to find and click close buttons
+            for pattern in self.POPUP_CLOSE_PATTERNS:
+                try:
+                    # Look for visible close buttons
+                    close_button = page.locator(pattern).first
+                    if await close_button.count() > 0:
+                        if await close_button.is_visible(timeout=2000):
+                            print(f"  Found pop-up close button: {pattern}")
+                            await close_button.click(timeout=3000)
+                            await page.wait_for_timeout(500)
+                            closed_count += 1
+                            print(f"  Closed pop-up #{closed_count}")
+                            break  # Try again for more pop-ups
+                except Exception as e:
+                    continue
+            else:
+                # Strategy 2: Try pressing Escape key
+                try:
+                    await page.keyboard.press('Escape')
+                    await page.wait_for_timeout(500)
+                    
+                    # Check if a modal disappeared
+                    has_modal = False
+                    for overlay_pattern in self.POPUP_OVERLAY_PATTERNS[:5]:
+                        try:
+                            if await page.locator(overlay_pattern).first.is_visible(timeout=1000):
+                                has_modal = True
+                                break
+                        except:
+                            continue
+                    
+                    if not has_modal:
+                        # No more visible modals, we're done
+                        break
+                except:
+                    pass
+                
+                # No more pop-ups found
+                break
+        
+        if closed_count > 0:
+            print(f"  Total pop-ups closed: {closed_count}")
+            await page.wait_for_timeout(1000)  # Wait for any animations
+        
+        return closed_count
+    
+    async def _handle_geolocation_popup(self, page: Page) -> Optional[str]:
+        """
+        Handle geolocation/country selector pop-ups.
+        
+        These pop-ups ask users to select their country/region, and may redirect
+        to different stores, subdomains, or locale paths.
+        
+        For now, we'll try to:
+        1. Detect if there's a geolocation pop-up
+        2. Look for "Continue to current site" or "Stay here" type buttons
+        3. If we find country-specific options, note them but decline
+        
+        Returns:
+            The action taken or None
+        """
+        try:
+            # Look for geolocation-specific pop-ups
+            geolocation_patterns = [
+                '[class*="geolocation"]',
+                '[class*="country-selector"]',
+                '[class*="locale-selector"]',
+                '[class*="region-selector"]',
+                'text=/shop.*currency/i',
+                'text=/country.*store/i',
+            ]
+            
+            for pattern in geolocation_patterns:
+                try:
+                    element = page.locator(pattern).first
+                    if await element.count() > 0 and await element.is_visible(timeout=2000):
+                        print(f"  Detected geolocation pop-up")
+                        
+                        # Look for "stay here" / "continue" buttons
+                        continue_patterns = [
+                            'button:has-text("Continue")',
+                            'button:has-text("Stay")',
+                            'button:has-text("No")',
+                            'button:has-text("Keep shopping")',
+                            'a:has-text("Continue")',
+                            'a:has-text("Stay")',
+                        ]
+                        
+                        for continue_pattern in continue_patterns:
+                            try:
+                                continue_btn = page.locator(continue_pattern).first
+                                if await continue_btn.count() > 0 and await continue_btn.is_visible(timeout=1000):
+                                    print(f"  Clicking 'continue/stay' button")
+                                    await continue_btn.click(timeout=3000)
+                                    await page.wait_for_timeout(1000)
+                                    return "stayed_on_current_store"
+                            except:
+                                continue
+                        
+                        # If no continue button found, try to close it
+                        print(f"  No 'continue' button found, trying to close...")
+                        await self._close_popups(page, max_attempts=1)
+                        return "closed_geolocation_popup"
+                        
+                except:
+                    continue
+                    
+        except Exception as e:
+            pass
+        
+        return None
     
     async def _detect_currency_from_page(self, page: Page) -> Optional[str]:
         """
@@ -239,18 +422,24 @@ class ShopifyVerifier:
             pass
         
         # Try each add to cart pattern
-        for pattern in self.ADD_TO_CART_PATTERNS:
+        for i, pattern in enumerate(self.ADD_TO_CART_PATTERNS, 1):
             try:
                 button = page.locator(pattern).first
                 if await button.count() > 0:
                     # Check if button is visible and enabled
                     if await button.is_visible(timeout=2000) and await button.is_enabled(timeout=1000):
+                        print(f"  Found add to cart button (pattern {i}/{len(self.ADD_TO_CART_PATTERNS)}): {pattern}")
                         await button.click(timeout=5000)
                         await page.wait_for_timeout(2000)  # Wait for cart to update
+                        print(f"  Successfully clicked add to cart button")
                         return True
             except Exception as e:
+                # Log more details about failures
+                if i <= 3:  # Only log first few attempts to avoid spam
+                    print(f"  Pattern {i} failed: {pattern} - {str(e)[:50]}")
                 continue
         
+        print(f"  Failed to find add to cart button after trying {len(self.ADD_TO_CART_PATTERNS)} patterns")
         return False
     
     async def _find_product_page(self, page: Page, base_url: str) -> Optional[str]:
@@ -262,8 +451,12 @@ class ShopifyVerifier:
         """
         # Strategy 1: Try /collections/all
         try:
+            print("  Trying /collections/all...")
             await page.goto(f"{base_url}/collections/all", wait_until="domcontentloaded", timeout=self.timeout)
             await page.wait_for_timeout(2000)
+            
+            # Close any pop-ups that might appear
+            await self._close_popups(page, max_attempts=1)
             
             # Find first product link
             product_links = page.locator('a[href*="/products/"]')
@@ -274,13 +467,19 @@ class ShopifyVerifier:
                     if href.startswith('http'):
                         return href
                     return base_url + href if href.startswith('/') else base_url + '/' + href
-        except:
+            print("  No products found in /collections/all")
+        except Exception as e:
+            print(f"  /collections/all failed: {str(e)[:50]}")
             pass
         
         # Strategy 2: Try homepage
         try:
+            print("  Trying homepage for products...")
             await page.goto(base_url, wait_until="domcontentloaded", timeout=self.timeout)
             await page.wait_for_timeout(2000)
+            
+            # Close any pop-ups
+            await self._close_popups(page, max_attempts=1)
             
             product_links = page.locator('a[href*="/products/"]')
             count = await product_links.count()
@@ -290,21 +489,30 @@ class ShopifyVerifier:
                     if href.startswith('http'):
                         return href
                     return base_url + href if href.startswith('/') else base_url + '/' + href
-        except:
+            print("  No products found on homepage")
+        except Exception as e:
+            print(f"  Homepage search failed: {str(e)[:50]}")
             pass
         
         # Strategy 3: Use products.json API
         try:
+            print("  Trying products.json API...")
             response = await page.request.get(f"{base_url}/products.json?limit=1")
             if response.ok:
                 data = await response.json()
                 if data.get('products') and len(data['products']) > 0:
                     handle = data['products'][0].get('handle')
                     if handle:
+                        print(f"  Found product via API: {handle}")
                         return f"{base_url}/products/{handle}"
-        except:
+                print("  No products found in API response")
+            else:
+                print(f"  API request failed with status {response.status}")
+        except Exception as e:
+            print(f"  API request failed: {str(e)[:50]}")
             pass
         
+        print("  Could not find any products using any strategy")
         return None
     
     async def _navigate_to_checkout(self, page: Page) -> bool:
@@ -425,6 +633,15 @@ class ShopifyVerifier:
                 await page.goto(base_url, wait_until="domcontentloaded", timeout=self.timeout)
                 await page.wait_for_timeout(3000)  # Let page fully load
                 
+                # Close any pop-ups on homepage (newsletters, cookies, etc.)
+                print("Checking for pop-ups on homepage...")
+                await self._close_popups(page)
+                
+                # Handle geolocation/country selector pop-ups
+                geo_action = await self._handle_geolocation_popup(page)
+                if geo_action:
+                    print(f"  Geolocation action: {geo_action}")
+                
                 # Detect homepage currency
                 result.homepage_currency = await self._detect_currency_from_page(page)
                 
@@ -449,9 +666,22 @@ class ShopifyVerifier:
                 await page.goto(product_url, wait_until="domcontentloaded", timeout=self.timeout)
                 await page.wait_for_timeout(2000)
                 
+                # Close any pop-ups on product page
+                print("Checking for pop-ups on product page...")
+                await self._close_popups(page)
+                
                 # Step 4: Add to cart
                 print("Adding product to cart...")
                 added = await self._find_and_click_add_to_cart(page)
+                
+                # If add to cart failed, try closing pop-ups and retry once
+                if not added:
+                    print("Add to cart failed, checking for blocking pop-ups...")
+                    closed = await self._close_popups(page, max_attempts=2)
+                    if closed > 0:
+                        print("Retrying add to cart after closing pop-ups...")
+                        await page.wait_for_timeout(1000)
+                        added = await self._find_and_click_add_to_cart(page)
                 
                 if not added:
                     result.error_message = "Could not add product to cart"
