@@ -879,14 +879,21 @@ class ShopifyVerifier:
                     await page.wait_for_timeout(1000)
                 except Exception as e:
                     error_str = str(e)
-                    if 'ERR_CERT' in error_str or 'SSL' in error_str:
+                    # More specific error detection
+                    if 'ERR_NAME_NOT_RESOLVED' in error_str or 'DNS' in error_str:
+                        result.error_message = "DNS resolution error (domain not configured properly)"
+                    elif 'ERR_CERT_COMMON_NAME_INVALID' in error_str:
+                        result.error_message = "SSL certificate error (certificate name mismatch)"
+                    elif 'ERR_CERT' in error_str or 'SSL' in error_str:
                         result.error_message = "SSL certificate error (invalid/expired certificate)"
-                    elif 'ERR_NAME_NOT_RESOLVED' in error_str:
-                        result.error_message = "Domain name not found (DNS error)"
+                    elif 'ERR_CONNECTION_REFUSED' in error_str:
+                        result.error_message = "Connection refused (server not accepting connections)"
                     elif 'ERR_CONNECTION' in error_str:
                         result.error_message = "Connection failed (server unreachable)"
                     elif 'timeout' in error_str.lower():
                         result.error_message = "Timeout loading store (too slow or blocked)"
+                    elif '404' in error_str:
+                        result.error_message = "Store returned 404 (page not found)"
                     else:
                         result.error_message = f"Failed to load store: {error_str[:100]}"
                     print(f"  ✗ {result.error_message}")
@@ -1004,12 +1011,13 @@ class ShopifyVerifier:
                     
                     # Check for post-purchase UPSELL patterns
                     if 'post-purchase' in url.lower() or 'post_purchase' in url.lower() or 'ppShouldTrigger' in url:
-                        detected_requests.append(url)
-                        if self.debug:
-                            print(f"  📡 Detected: {url[:100]}")
+                        if url not in detected_requests:  # Avoid duplicates
+                            detected_requests.append(url)
+                            print(f"  📡 Post-purchase detected: {url[:80]}...")
                 
-                # Attach listener before navigation
+                # Attach listeners to both requests and responses
                 page.on('request', handle_request)
+                page.on('response', lambda response: handle_request(response.request))
                 
                 # Navigate to checkout
                 print("Navigating to checkout...")
@@ -1043,6 +1051,10 @@ class ShopifyVerifier:
                     print(f"  ℹ️  Multiple countries available but single currency")
                 else:
                     print(f"  ℹ️  Single market store")
+                
+                # Wait a bit more for any post-purchase requests triggered by page changes
+                print("Waiting for post-purchase network activity...")
+                await page.wait_for_timeout(3000)  # Additional wait to catch late-firing requests
                 
                 # Step 7: Analyze post-purchase network requests
                 print("Analyzing post-purchase upsells...")

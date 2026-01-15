@@ -75,10 +75,10 @@ async def main():
     # EDIT THIS LINE TO TEST DIFFERENT STORES
     # ============================================
     
-    test_store = "https://prosupps.com"  # One of the failed stores
+    test_store = "https://itsbronze.com"  # Test post-purchase detection
     
     # Set to True to hide browser, False to watch it work
-    show_browser = True  # Show browser to see what's happening
+    show_browser = False  # Headless for speed
     
     # Enable extra logging and screenshots for debugging
     debug_mode = True
