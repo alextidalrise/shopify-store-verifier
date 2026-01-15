@@ -874,8 +874,23 @@ class ShopifyVerifier:
                 
                 # Step 1: Navigate directly to products.json to get product data AND establish session
                 print(f"Loading {base_url}/products.json...")
-                await page.goto(f"{base_url}/products.json?limit=10", wait_until="domcontentloaded", timeout=self.timeout)
-                await page.wait_for_timeout(1000)
+                try:
+                    await page.goto(f"{base_url}/products.json?limit=10", wait_until="domcontentloaded", timeout=self.timeout)
+                    await page.wait_for_timeout(1000)
+                except Exception as e:
+                    error_str = str(e)
+                    if 'ERR_CERT' in error_str or 'SSL' in error_str:
+                        result.error_message = "SSL certificate error (invalid/expired certificate)"
+                    elif 'ERR_NAME_NOT_RESOLVED' in error_str:
+                        result.error_message = "Domain name not found (DNS error)"
+                    elif 'ERR_CONNECTION' in error_str:
+                        result.error_message = "Connection failed (server unreachable)"
+                    elif 'timeout' in error_str.lower():
+                        result.error_message = "Timeout loading store (too slow or blocked)"
+                    else:
+                        result.error_message = f"Failed to load store: {error_str[:100]}"
+                    print(f"  ✗ {result.error_message}")
+                    return result
                 
                 # Step 2: Parse products.json from the page to find available variant
                 print("Finding an available product...")
