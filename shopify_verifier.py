@@ -394,8 +394,18 @@ class ShopifyVerifier:
             Tuple of (list of country codes/names, currently selected country)
         """
         try:
-            # Look for the country selector
+            # Look for the country selector - wait for it to be visible (up to 5 seconds)
+            # The selector might be populated by JavaScript after initial page load
             country_select = page.locator('select[name="countryCode"]').first
+            
+            try:
+                # Wait for the selector to be attached to DOM and visible
+                await country_select.wait_for(state='attached', timeout=5000)
+            except:
+                # Selector didn't appear within timeout
+                if self.debug:
+                    print("  No country selector found (timeout waiting for element)")
+                return [], None
             
             if await country_select.count() == 0:
                 if self.debug:
