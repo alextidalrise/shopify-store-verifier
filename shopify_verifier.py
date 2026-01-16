@@ -851,7 +851,8 @@ class ShopifyVerifier:
                     print(f"  ✅ Multi-currency verified: {unique_currencies}")
                 elif len(currency_test['country_currency_pairs']) > 0:
                     # We tested but found only one currency
-                    print(f"  ℹ️  Tested {len(currency_test['country_currency_pairs'])} countries, all use {initial_currency}")
+                    currency = currency_test.get('initial_currency', 'unknown')
+                    print(f"  ℹ️  Tested {len(currency_test['country_currency_pairs'])} countries, all use {currency}")
                 elif len(currency_test['available_countries']) > 1:
                     print(f"  ℹ️  Multiple countries available but could not verify currencies")
                 else:
