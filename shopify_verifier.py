@@ -601,7 +601,9 @@ class ShopifyVerifier:
                 # Mark as successful even if currency_changed might be False for last test
                 result['currency_changed'] = True
             else:
-                print(f"  ℹ️  All tested countries use {initial_currency}")
+                # Use value from result dict to avoid scope issues
+                currency = result.get('initial_currency', 'unknown')
+                print(f"  ℹ️  All tested countries use {currency}")
             
             return result
             

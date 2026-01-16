@@ -360,7 +360,7 @@ async def main():
     csv_url_column = "url"
     
     # How many stores to process at once (3-5 recommended)
-    concurrent = 5  # Back to parallel mode - domain redirect issues fixed!
+    concurrent = 2  # Reduced to 2 to ease machine load
     
     # Where to save results
     output_folder = "results"
