@@ -49,18 +49,65 @@ class BatchVerifier:
                     stores.append(url.strip())
         return stores
     
+    def normalize_url(self, url: str) -> str:
+        """
+        Normalize a URL from various input formats.
+        
+        Handles:
+        - Missing protocol (adds https://)
+        - Trailing slashes and asterisks (removes)
+        - http:// -> https://
+        - Semicolon-separated URLs (takes first)
+        - Whitespace
+        
+        Args:
+            url: Raw URL string
+            
+        Returns:
+            Normalized URL or None if empty
+        """
+        # Strip whitespace
+        url = url.strip()
+        
+        # Skip empty lines
+        if not url:
+            return None
+        
+        # Handle semicolon-separated URLs (take the first one)
+        if ';' in url:
+            url = url.split(';')[0].strip()
+        
+        # Remove trailing /* or * or /
+        url = url.rstrip('/*').rstrip('/')
+        
+        # Add https:// if no protocol
+        if not url.startswith(('http://', 'https://')):
+            url = f"https://{url}"
+        
+        # Convert http to https
+        if url.startswith('http://'):
+            url = url.replace('http://', 'https://')
+        
+        return url
+    
     def load_stores_from_txt(self, filepath: str) -> List[str]:
         """
         Load store URLs from a text file (one per line).
+        Automatically normalizes URLs to handle various formats.
         
         Args:
             filepath: Path to text file
             
         Returns:
-            List of store URLs
+            List of normalized store URLs
         """
+        stores = []
         with open(filepath, 'r', encoding='utf-8') as f:
-            return [line.strip() for line in f if line.strip()]
+            for line in f:
+                normalized = self.normalize_url(line)
+                if normalized:
+                    stores.append(normalized)
+        return stores
     
     def save_results_to_csv(self, results: List[VerificationResult], filename: str = None):
         """
@@ -313,7 +360,7 @@ async def main():
     csv_url_column = "url"
     
     # How many stores to process at once (3-5 recommended)
-    concurrent = 1  # Test sequential mode for athletikco debugging
+    concurrent = 5  # Back to parallel mode - domain redirect issues fixed!
     
     # Where to save results
     output_folder = "results"

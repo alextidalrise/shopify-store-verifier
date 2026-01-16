@@ -336,8 +336,6 @@ class ShopifyVerifier:
             
             # Check if we reached checkout
             final_url = page.url
-            print(f"  Final URL: {final_url}")
-            
             if '/checkout' in final_url or 'checkout.shopify.com' in final_url:
                 print(f"  ✓ Reached checkout")
                 return True, None
