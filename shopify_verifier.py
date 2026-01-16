@@ -492,8 +492,24 @@ class ShopifyVerifier:
             print(f"  Initial: {initial_country} → {initial_currency}")
             result['country_currency_pairs'][initial_country] = initial_currency
             
-            # Find countries to test - prioritize store's base currency for post-purchase detection
+            # Find countries to test - sample from multiple currency zones to avoid false negatives
+            # Some stores configure unexpected currencies (e.g., AR using USD instead of ARS)
+            # So we need to test multiple countries to be confident about multi-currency support
+            
+            # Define diverse currency zones to test
+            currency_test_targets = [
+                ('US', 'USD'),      # USD zone
+                ('ES', 'EUR'),      # EUR zone  
+                ('GB', 'GBP'),      # GBP zone
+                ('AU', 'AUD'),      # AUD zone
+                ('CA', 'CAD'),      # CAD zone
+                ('JP', 'JPY'),      # JPY zone
+                ('CH', 'CHF'),      # CHF zone
+                ('SE', 'SEK'),      # SEK zone
+            ]
+            
             countries_to_test = []
+            tested_currency_zones = set()
             
             # First, try to find a country matching the store's base currency
             if store_base_currency and store_base_currency != initial_currency:
@@ -503,24 +519,49 @@ class ShopifyVerifier:
                         expected_currency = self._get_expected_currency(country)
                         if expected_currency == store_base_currency:
                             countries_to_test.append(country)
+                            tested_currency_zones.add(store_base_currency)
                             print(f"  Will test {country} (matches store base currency: {store_base_currency})")
                             break
             
-            # If no base currency match or no base currency info, try US (most common)
-            if not countries_to_test and 'US' in countries and initial_country != 'US':
-                countries_to_test.append('US')
-            
-            # Then find a country with different currency for proper currency testing
+            # Then select countries from diverse currency zones (max 3-4 to avoid too many requests)
             initial_expected_currency = self._get_expected_currency(initial_country)
-            for country in countries:
-                if country not in countries_to_test and country != initial_country:
+            if initial_expected_currency:
+                tested_currency_zones.add(initial_expected_currency)
+            
+            max_tests = 4  # Test up to 4 countries to balance thoroughness vs speed
+            for target_country, target_currency in currency_test_targets:
+                if len(countries_to_test) >= max_tests:
+                    break
+                    
+                # Skip if we already tested this currency zone or it's the initial country
+                if target_currency in tested_currency_zones or target_country == initial_country:
+                    continue
+                    
+                # Only add if this country is available in the store
+                if target_country in countries:
+                    countries_to_test.append(target_country)
+                    tested_currency_zones.add(target_currency)
+            
+            # Fallback: If we haven't reached max_tests and still have available countries,
+            # sample from remaining countries to catch currencies not in our predefined list
+            # (e.g., MXN, BRL, etc.)
+            if len(countries_to_test) < max_tests:
+                for country in countries:
+                    if len(countries_to_test) >= max_tests:
+                        break
+                        
+                    if country == initial_country or country in countries_to_test:
+                        continue
+                    
                     expected_currency = self._get_expected_currency(country)
-                    if expected_currency and expected_currency != initial_expected_currency:
+                    if expected_currency and expected_currency not in tested_currency_zones:
                         countries_to_test.append(country)
-                        break  # Just need one different currency
+                        tested_currency_zones.add(expected_currency)
+                        if self.debug:
+                            print(f"  Added fallback country: {country} (expect {expected_currency})")
             
             if not countries_to_test:
-                print("  All countries use same currency - no switch test needed")
+                print("  Could not find additional countries to test")
                 return result
             
             country_select = page.locator('select[name="countryCode"]').first
@@ -551,6 +592,8 @@ class ShopifyVerifier:
             unique_currencies = set(result['country_currency_pairs'].values())
             if len(unique_currencies) > 1:
                 print(f"  ✅ Detected multiple currencies: {unique_currencies}")
+                # Mark as successful even if currency_changed might be False for last test
+                result['currency_changed'] = True
             else:
                 print(f"  ℹ️  All tested countries use {initial_currency}")
             
@@ -793,12 +836,16 @@ class ShopifyVerifier:
                 result.switched_currency = currency_test['switched_currency']
                 
                 # Determine if multi-currency is supported
+                # Support is confirmed if we found 2+ different currencies across all tested countries
                 unique_currencies = set(currency_test['country_currency_pairs'].values())
-                if len(unique_currencies) > 1 and currency_test['currency_changed']:
+                if len(unique_currencies) > 1:
                     result.multiple_currencies_supported = True
                     print(f"  ✅ Multi-currency verified: {unique_currencies}")
+                elif len(currency_test['country_currency_pairs']) > 0:
+                    # We tested but found only one currency
+                    print(f"  ℹ️  Tested {len(currency_test['country_currency_pairs'])} countries, all use {initial_currency}")
                 elif len(currency_test['available_countries']) > 1:
-                    print(f"  ℹ️  Multiple countries available but single currency")
+                    print(f"  ℹ️  Multiple countries available but could not verify currencies")
                 else:
                     print(f"  ℹ️  Single market store")
                 

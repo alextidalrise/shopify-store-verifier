@@ -75,7 +75,7 @@ async def main():
     # EDIT THIS LINE TO TEST DIFFERENT STORES
     # ============================================
     
-    test_store = "https://athletikco.com"  # Test athletikco
+    test_store = "https://golfcourselawn.store"  # Test golf course lawn
     
     # Set to True to hide browser, False to watch it work
     show_browser = False  # Headless mode for speed
