@@ -587,6 +587,9 @@ class ShopifyVerifier:
                         result['currency_changed'] = True
                         result['switched_country'] = test_country
                         result['switched_currency'] = new_currency
+                        # We've confirmed multi-currency support, no need to test more
+                        print(f"  ✅ Multi-currency confirmed, stopping tests early")
+                        break
             
             # Report results
             unique_currencies = set(result['country_currency_pairs'].values())
