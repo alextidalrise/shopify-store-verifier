@@ -75,7 +75,7 @@ async def main():
     # EDIT THIS LINE TO TEST DIFFERENT STORES
     # ============================================
     
-    test_store = "https://geteuvella.com"  # Test cart verification
+    test_store = "https://athletikco.com"  # Test athletikco
     
     # Set to True to hide browser, False to watch it work
     show_browser = False  # Headless mode for speed

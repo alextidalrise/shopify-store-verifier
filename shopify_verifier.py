@@ -336,6 +336,8 @@ class ShopifyVerifier:
             
             # Check if we reached checkout
             final_url = page.url
+            print(f"  Final URL: {final_url}")
+            
             if '/checkout' in final_url or 'checkout.shopify.com' in final_url:
                 print(f"  ✓ Reached checkout")
                 return True, None
@@ -594,7 +596,32 @@ class ShopifyVerifier:
                     
                     page.on("console", log_console_message)
                 
-                # Step 0: Fetch store metadata to get base currency
+                # Step 0: First, load the homepage to detect www redirect and establish correct domain
+                print(f"Checking domain redirect...")
+                try:
+                    await page.goto(base_url, wait_until="domcontentloaded", timeout=self.timeout)
+                    await page.wait_for_timeout(500)
+                    
+                    # Check if we were redirected
+                    current_url = page.url
+                    redirected_base = self._normalize_url(current_url)
+                    if redirected_base != base_url:
+                        print(f"  ✓ Domain redirect detected: {base_url} → {redirected_base}")
+                        base_url = redirected_base
+                    else:
+                        print(f"  No domain redirect")
+                except Exception as e:
+                    error_str = str(e)
+                    if 'ERR_CERT_COMMON_NAME_INVALID' in error_str:
+                        result.error_message = "SSL certificate error (certificate name mismatch)"
+                    elif 'ERR_CERT' in error_str or 'SSL' in error_str:
+                        result.error_message = "SSL certificate error (invalid/expired certificate)"
+                    else:
+                        result.error_message = f"Failed to load store: {error_str[:100]}"
+                    print(f"  ✗ {result.error_message}")
+                    return result
+                
+                # Step 1: Fetch store metadata to get base currency
                 print(f"Fetching store metadata...")
                 store_base_currency = None
                 store_base_country = None
@@ -609,7 +636,7 @@ class ShopifyVerifier:
                 except:
                     pass  # Not critical, we can work without it
                 
-                # Step 1: Navigate directly to products.json to get product data AND establish session
+                # Step 2: Navigate directly to products.json to get product data
                 print(f"Loading {base_url}/products.json...")
                 try:
                     await page.goto(f"{base_url}/products.json?limit=50", wait_until="domcontentloaded", timeout=self.timeout)
@@ -636,7 +663,7 @@ class ShopifyVerifier:
                     print(f"  ✗ {result.error_message}")
                     return result
                 
-                # Step 2: Parse products.json from the page to find available variant
+                # Step 3: Parse products.json from the page to find available variant
                 print("Finding an available product...")
                 try:
                     products_data = await page.evaluate("""() => {
@@ -707,7 +734,7 @@ class ShopifyVerifier:
                 # Store product URL for reference
                 result.product_url = f"{base_url}/products/{product_handle}" if product_handle else base_url
                 
-                # Step 3: Add to cart via API only
+                # Step 4: Add to cart via API only
                 print("Adding product to cart...")
                 added = await self._add_product_to_cart_via_api(page, variant_id, base_url)
                 
@@ -716,6 +743,9 @@ class ShopifyVerifier:
                     return result
                 
                 print("Product added to cart")
+                
+                # Give the cart session a moment to stabilize on the server
+                await page.wait_for_timeout(2000)
                 
                 # Step 5: Set up network monitoring BEFORE navigating to checkout
                 print("Setting up post-purchase monitoring...")

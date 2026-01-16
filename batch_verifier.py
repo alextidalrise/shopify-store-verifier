@@ -313,7 +313,7 @@ async def main():
     csv_url_column = "url"
     
     # How many stores to process at once (3-5 recommended)
-    concurrent = 5  # Faster for the optimized flow!
+    concurrent = 1  # Test sequential mode for athletikco debugging
     
     # Where to save results
     output_folder = "results"
